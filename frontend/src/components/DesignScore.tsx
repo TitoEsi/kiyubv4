@@ -7,11 +7,11 @@ interface Props {
 }
 
 const SCORE_META: Record<string, { label: string; icon: string; desc: string }> = {
-  adjacency:     { label: 'Room Adjacency',   icon: '🔗', desc: 'Ideal room-to-room proximity (kitchen↔dining, bed↔bath…)' },
-  natural_light: { label: 'Natural Light',    icon: '☀️', desc: 'Percentage of living spaces on exterior walls' },
-  circulation:   { label: 'Circulation',      icon: '🚶', desc: 'Foyer, hallway adequacy and traffic flow' },
-  privacy:       { label: 'Privacy Zoning',   icon: '🔒', desc: 'Bedroom separation from public living areas' },
-  efficiency:    { label: 'Space Efficiency', icon: '📐', desc: 'How well rooms fill the building footprint' },
+  adjacency:     { label: 'Room Adjacency',   icon: '', desc: 'Ideal room-to-room proximity (kitchen↔dining, bed↔bath…)' },
+  natural_light: { label: 'Natural Light',    icon: '', desc: 'Percentage of living spaces on exterior walls' },
+  circulation:   { label: 'Circulation',      icon: '', desc: 'Foyer, hallway adequacy and traffic flow' },
+  privacy:       { label: 'Privacy Zoning',   icon: '', desc: 'Bedroom separation from public living areas' },
+  efficiency:    { label: 'Space Efficiency', icon: '', desc: 'How well rooms fill the building footprint' },
 }
 
 function ScoreBar({ score }: { score: number }) {
@@ -39,6 +39,7 @@ function GradeCircle({ grade, overall }: { grade: string; overall: number }) {
 export default function DesignScore({ plan }: Props) {
   const [result, setResult] = useState<ScoreResult | null>(null)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     run()
@@ -46,10 +47,13 @@ export default function DesignScore({ plan }: Props) {
 
   async function run() {
     setLoading(true)
+    setError(null)
     try {
       const r = await fetchDesignScore(plan)
       setResult(r)
-    } catch { /* noop */ }
+    } catch {
+      setError('Could not score this design. Try again.')
+    }
     finally { setLoading(false) }
   }
 
@@ -61,6 +65,7 @@ export default function DesignScore({ plan }: Props) {
       </div>
 
       {loading && <div className="score-loading">Analyzing layout...</div>}
+      {error && <div className="error-msg" role="alert">{error}</div>}
 
       {result && !loading && (
         <div className="score-body">
@@ -72,8 +77,7 @@ export default function DesignScore({ plan }: Props) {
               <div className="score-insights-title">AI Insights</div>
               {result.insights.map((ins, i) => (
                 <div key={i} className="score-insight-item">
-                  {ins.startsWith('Excellent') || ins.startsWith('Great')
-                    ? '✅' : '⚠️'} {ins}
+                  {ins}
                 </div>
               ))}
             </div>
@@ -81,11 +85,10 @@ export default function DesignScore({ plan }: Props) {
 
           <div className="score-right">
             {Object.entries(result.scores).map(([key, val]) => {
-              const meta = SCORE_META[key] || { label: key, icon: '📊', desc: '' }
+              const meta = SCORE_META[key] || { label: key, icon: '', desc: '' }
               return (
                 <div key={key} className="score-row">
                   <div className="score-row-top">
-                    <span className="score-icon">{meta.icon}</span>
                     <span className="score-label">{meta.label}</span>
                     <span className="score-val">{Math.round(val)}</span>
                   </div>

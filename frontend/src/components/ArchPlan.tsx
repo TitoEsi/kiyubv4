@@ -6,7 +6,9 @@
  */
 
 import React, { useMemo } from 'react'
-import { FloorPlan, Room } from '../types/floorplan'
+import { FloorPlan, Room, roomBoundary, roomCentroid, roomParts } from '../types/floorplan'
+import { annotationPoint, commentRoleLabel, pinTargetLabel, PlanAnnotation } from './planAnnotations'
+import { displayNameFromEmail, formatDate } from '../workflow/displayName'
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -52,6 +54,19 @@ export interface ArchPlanProps {
   onSelect: (id: string | null) => void
   containerWidth: number
   containerHeight: number
+  annotations?: PlanAnnotation[]
+  annotationMode?: boolean
+  selectedAnnotationId?: string | null
+  currentUserId?: string
+  draft?: { x: number; y: number; object_id: string | null; body: string } | null
+  onPlaceAnnotation?: (x: number, y: number, roomId: string | null) => void
+  onSelectAnnotation?: (id: string | null) => void
+  onDraftChange?: (body: string) => void
+  onDraftSubmit?: () => void
+  onDraftCancel?: () => void
+  onUpdateAnnotation?: (id: string, body: string) => void
+  onDeleteAnnotation?: (id: string) => void
+  onMoveAnnotation?: (id: string, x: number, y: number) => void
 }
 
 interface RoomPx {
@@ -724,8 +739,8 @@ function RoomFixtures({ rp, S }: { rp: RoomPx; S: number }): React.ReactElement 
 
 // ─── Room label ───────────────────────────────────────────────────────────────
 
-function RoomLabel({ rp, selected }: { rp: RoomPx; selected: boolean }): React.ReactElement {
-  const { px, py, pw, ph, room } = rp
+function RoomLabel({ rp, selected, ox, oy, S }: { rp: RoomPx; selected: boolean; ox: number; oy: number; S: number }): React.ReactElement {
+  const { pw, ph, room } = rp
   const name = room.name.toUpperCase()
   const dims = `${Math.round(room.width)}' × ${Math.round(room.height)}'`
   const area = `${Math.round(room.width * room.height)} SF`
@@ -733,8 +748,9 @@ function RoomLabel({ rp, selected }: { rp: RoomPx; selected: boolean }): React.R
   const fontSize = Math.max(8, Math.min(13, pw / (name.length * 0.65)))
   const dimSize  = Math.max(7, Math.min(10, fontSize * 0.78))
 
-  const cx = px + pw / 2
-  const cy = py + ph / 2
+  const c = roomCentroid(room)
+  const cx = ox + c.x * S
+  const cy = oy + c.y * S
 
   const showDims = pw > 55 && ph > 38
   const showArea = ph > 55
@@ -909,12 +925,34 @@ function TitleBlock({
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
+function roomAtFeet(plan: FloorPlan, x: number, y: number): string | null {
+  for (const room of plan.rooms) {
+    if (roomParts(room).some(p => x >= p.x && x <= p.x + p.width && y >= p.y && y <= p.y + p.height)) {
+      return room.id
+    }
+  }
+  return null
+}
+
 export default function ArchPlan({
   plan,
   selectedId,
   onSelect,
   containerWidth,
   containerHeight,
+  annotations = [],
+  annotationMode = false,
+  selectedAnnotationId = null,
+  currentUserId,
+  draft = null,
+  onPlaceAnnotation,
+  onSelectAnnotation,
+  onDraftChange,
+  onDraftSubmit,
+  onDraftCancel,
+  onUpdateAnnotation,
+  onDeleteAnnotation,
+  onMoveAnnotation,
 }: ArchPlanProps): React.ReactElement {
   const svgW = containerWidth
   const svgH = containerHeight
@@ -972,12 +1010,31 @@ export default function ArchPlan({
   const planH = plan.totalHeight * S
 
   return (
+    <div className="archplan-wrap" style={{ width: svgW, height: svgH, position: 'relative' }}>
     <svg
       width={svgW}
       height={svgH}
-      style={{ display: 'block', background: BG, cursor: 'default' }}
+      style={{ display: 'block', background: BG, cursor: annotationMode ? 'crosshair' : 'default' }}
       onClick={e => {
-        if ((e.target as SVGElement).tagName === 'svg') onSelect(null)
+        const svg = e.currentTarget
+        const ctm = svg.getScreenCTM()
+        if (annotationMode && onPlaceAnnotation && ctm) {
+          const pt = svg.createSVGPoint()
+          pt.x = e.clientX
+          pt.y = e.clientY
+          const loc = pt.matrixTransform(ctm.inverse())
+          const x = (loc.x - ox) / S
+          const y = (loc.y - oy) / S
+          onPlaceAnnotation(x, y, roomAtFeet(plan, x, y))
+          return
+        }
+        const tag = (e.target as SVGElement).tagName
+        if (tag === 'svg' || tag === 'rect') {
+          if ((e.target as SVGElement) === e.currentTarget || (e.target as SVGRectElement).getAttribute('fill') === BG) {
+            onSelect(null)
+            onSelectAnnotation?.(null)
+          }
+        }
       }}
     >
       {/* Paper background */}
@@ -1007,19 +1064,25 @@ export default function ArchPlan({
         })}
       </g>
 
-      {/* ── Room fills ── */}
+      {/* ── Room fills (footprint parts; never fill the L void) ── */}
       <g>
-        {roomPxs.map(rp => (
-          <rect
-            key={`fill-${rp.room.id}`}
-            x={rp.px} y={rp.py}
-            width={rp.pw} height={rp.ph}
-            fill={roomFill(rp.room.type)}
-            stroke="none"
-            onClick={() => onSelect(rp.room.id === selectedId ? null : rp.room.id)}
-            style={{ cursor: 'pointer' }}
-          />
-        ))}
+        {plan.rooms.flatMap(room =>
+          roomParts(room).map((p, i) => (
+            <rect
+              key={`fill-${room.id}-${i}`}
+              x={ox + p.x * S} y={oy + p.y * S}
+              width={p.width * S} height={p.height * S}
+              fill={roomFill(room.type)}
+              stroke="none"
+              onClick={e => {
+                if (annotationMode) return
+                e.stopPropagation()
+                onSelect(room.id === selectedId ? null : room.id)
+              }}
+              style={{ cursor: 'pointer' }}
+            />
+          )),
+        )}
       </g>
 
       {/* ── Room fixtures ── */}
@@ -1038,19 +1101,21 @@ export default function ArchPlan({
         })}
       </g>
 
-      {/* ── Walls (room outlines — drawn thick) ── */}
+      {/* ── Walls (outer footprint segments — internal L edges are not walls) ── */}
       <g>
-        {roomPxs.map(rp => (
-          <rect
-            key={`wall-${rp.room.id}`}
-            x={rp.px} y={rp.py}
-            width={rp.pw} height={rp.ph}
-            fill="none"
-            stroke={rp.room.id === selectedId ? '#d45000' : '#1a1a1a'}
-            strokeWidth={rp.room.id === selectedId ? WALL_W + 1 : WALL_W}
-            style={{ pointerEvents: 'none' }}
-          />
-        ))}
+        {plan.rooms.flatMap(room =>
+          roomBoundary(room).map((seg, i) => (
+            <line
+              key={`wall-${room.id}-${i}`}
+              x1={ox + seg.x1 * S} y1={oy + seg.y1 * S}
+              x2={ox + seg.x2 * S} y2={oy + seg.y2 * S}
+              stroke={room.id === selectedId ? '#d45000' : '#1a1a1a'}
+              strokeWidth={room.id === selectedId ? WALL_W + 1 : WALL_W}
+              strokeLinecap="square"
+              style={{ pointerEvents: 'none' }}
+            />
+          )),
+        )}
       </g>
 
       {/* ── Outer plan boundary (extra-thick) ── */}
@@ -1079,6 +1144,9 @@ export default function ArchPlan({
             key={`lbl-${rp.room.id}`}
             rp={rp}
             selected={rp.room.id === selectedId}
+            ox={ox}
+            oy={oy}
+            S={S}
           />
         ))}
       </g>
@@ -1094,6 +1162,135 @@ export default function ArchPlan({
 
       {/* ── Title block ── */}
       <TitleBlock plan={plan} svgW={svgW} svgH={svgH} />
+
+      <g className="plan-notes" pointerEvents="auto">
+        {annotations.map(a => {
+          const pt = annotationPoint(a, plan)
+          if (!pt) return null
+          const px = ox + pt.x * S
+          const py = oy + pt.y * S
+          const mine = a.author_id === currentUserId
+          const isClient = a.author_role === 'CLIENT'
+          return (
+            <g key={a.id} className="plan-note" transform={`translate(${px}, ${py})`}>
+              <circle
+                r={5}
+                fill={isClient ? '#17191c' : '#3d7a78'}
+                stroke="#faf9f5"
+                strokeWidth={1.5}
+                onClick={e => {
+                  e.stopPropagation()
+                  onSelectAnnotation?.(a.id)
+                  if (a.object_id) onSelect(a.object_id)
+                }}
+                onMouseDown={e => {
+                  if (!mine || !onMoveAnnotation) return
+                  e.stopPropagation()
+                  const svg = (e.target as SVGElement).ownerSVGElement
+                  if (!svg) return
+                  let nx = pt.x
+                  let ny = pt.y
+                  const move = (ev: MouseEvent) => {
+                    const ctm = svg.getScreenCTM()
+                    if (!ctm) return
+                    const p = svg.createSVGPoint()
+                    p.x = ev.clientX
+                    p.y = ev.clientY
+                    const loc = p.matrixTransform(ctm.inverse())
+                    nx = (loc.x - ox) / S
+                    ny = (loc.y - oy) / S
+                  }
+                  const up = () => {
+                    window.removeEventListener('mousemove', move)
+                    window.removeEventListener('mouseup', up)
+                    onMoveAnnotation(a.id, nx, ny)
+                  }
+                  window.addEventListener('mousemove', move)
+                  window.addEventListener('mouseup', up)
+                }}
+                style={{ cursor: mine ? 'grab' : 'pointer' }}
+              />
+            </g>
+          )
+        })}
+        {draft && (
+          <g className="plan-note" transform={`translate(${ox + draft.x * S}, ${oy + draft.y * S})`}>
+            <circle r={5} fill="#3d7a78" stroke="#faf9f5" strokeWidth={1.5} />
+          </g>
+        )}
+      </g>
     </svg>
+    <div className="archplan-note-overlay">
+      {annotations.map(a => {
+        const pt = annotationPoint(a, plan)
+        if (!pt || a.id !== selectedAnnotationId) return null
+        const px = ox + pt.x * S
+        const py = oy + pt.y * S
+        const mine = a.author_id === currentUserId
+        const isClient = a.author_role === 'CLIENT'
+        const target = pinTargetLabel(plan, a.object_id)
+        const authorName = displayNameFromEmail(a.author_email || 'client')
+        const created = formatDate(a.created_at)
+        return (
+          <div
+            key={a.id}
+            className={`plan-note-card ${isClient ? 'plan-note-card-client' : 'plan-note-card-architect'}`}
+            style={{ left: px + 10, top: Math.max(8, py - 78) }}
+            onClick={e => e.stopPropagation()}
+            onMouseDown={e => e.stopPropagation()}
+          >
+            <p className="plan-note-role">{commentRoleLabel(a.author_role)}</p>
+            <p className="plan-note-author">{authorName}</p>
+            <p className="plan-note-body">{a.body}</p>
+            {target && <p className="plan-note-meta">Pinned to: {target}</p>}
+            {created && <p className="plan-note-meta">Created: {created}</p>}
+            {mine && (
+              <div className="plan-note-actions">
+                <button
+                  type="button"
+                  onClick={e => {
+                    e.stopPropagation()
+                    const next = window.prompt('Edit comment', a.body)
+                    if (next != null && next.trim()) onUpdateAnnotation?.(a.id, next.trim())
+                  }}
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  onClick={e => {
+                    e.stopPropagation()
+                    onDeleteAnnotation?.(a.id)
+                  }}
+                >
+                  Delete
+                </button>
+              </div>
+            )}
+          </div>
+        )
+      })}
+      {draft && (
+        <form
+          className="plan-note-card"
+          style={{ left: ox + draft.x * S + 10, top: Math.max(8, oy + draft.y * S - 56) }}
+          onClick={e => e.stopPropagation()}
+          onMouseDown={e => e.stopPropagation()}
+          onSubmit={e => { e.preventDefault(); e.stopPropagation(); onDraftSubmit?.() }}
+        >
+          <textarea
+            value={draft.body}
+            onChange={e => onDraftChange?.(e.target.value)}
+            placeholder="Write a note"
+            autoFocus
+          />
+          <div className="plan-note-actions">
+            <button type="submit">Post</button>
+            <button type="button" onClick={e => { e.stopPropagation(); onDraftCancel?.() }}>Cancel</button>
+          </div>
+        </form>
+      )}
+    </div>
+    </div>
   )
 }

@@ -19,19 +19,61 @@ import time
 import httpx
 import numpy as np
 import torch
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 
 from .bubble_diagram import BubbleDiagram, BubbleRoom
-from .model import HouseGANGenerator, MASK_SIZE, NUM_ROOM_TYPES
+from .model import MASK_SIZE, NUM_ROOM_TYPES
+from .official_adapter import official_masks_to_nchw, pack_official_inputs
+from .official_generator import Generator as OfficialGenerator
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 WEIGHTS_DIR   = Path(__file__).parent / "weights"
+CHECKPOINT_NAME = "pretrained.pth"
+CHECKPOINT_ALIASES = ("pretrained.pth", "housegan_pp.pt")
 HF_SPACE_URL  = os.getenv(
     "HOUSEGAN_HF_URL",
     "https://buildify-housegan.hf.space/api/predict"
 )
 WALL_BUFFER   = 0.5   # ft buffer from house edge
+
+
+@dataclass
+class HouseGANStatus:
+    """Trained-model availability. Importing the package is not the same as trained."""
+
+    available: bool
+    source: str  # local_trained | remote | unavailable | load_failed
+    checkpoint_path: str | None
+    reason: str | None
+
+    def as_dict(self) -> dict:
+        return {
+            "available": self.available,
+            "source": self.source,
+            "checkpoint_path": self.checkpoint_path,
+            "reason": self.reason,
+        }
+
+
+def checkpoint_path() -> Path:
+    """First existing alias, else the official pretrained.pth path (may be missing)."""
+    for name in CHECKPOINT_ALIASES:
+        candidate = WEIGHTS_DIR / name
+        if candidate.exists():
+            return candidate
+    return WEIGHTS_DIR / CHECKPOINT_NAME
+
+
+def housegan_device() -> str:
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def remote_enabled() -> bool:
+    return os.environ.get("KIYUB_HOUSEGAN_REMOTE_ENABLED", "0").strip() not in (
+        "", "0", "false", "False", "no", "NO",
+    )
 
 
 # ── Mask → Bounding Box ──────────────────────────────────────────────────────
@@ -216,45 +258,130 @@ def resolve_overlaps(placed: List[Dict], W: float, H: float,
 
 # ── Local Inference ───────────────────────────────────────────────────────────
 
-_cached_model: Optional[HouseGANGenerator] = None
+_cached_model: Optional[OfficialGenerator] = None
+_status: Optional[HouseGANStatus] = None
+_local_checked: bool = False
+_remote_attempted: bool = False
+_remote_ok: bool = False
+_logged_status: bool = False
 
 
-def _get_local_model() -> Optional[HouseGANGenerator]:
-    """Load HouseGAN++ from local weights if available."""
-    global _cached_model
+def reset_housegan_runtime() -> None:
+    """Test helper: clear process caches. Not used in generation."""
+    global _cached_model, _status, _local_checked
+    global _remote_attempted, _remote_ok, _logged_status
+    _cached_model = None
+    _status = None
+    _local_checked = False
+    _remote_attempted = False
+    _remote_ok = False
+    _logged_status = False
+
+
+def _set_status(available: bool, source: str, reason: str | None) -> HouseGANStatus:
+    global _status
+    _status = HouseGANStatus(
+        available=available,
+        source=source,
+        checkpoint_path=str(checkpoint_path()),
+        reason=reason,
+    )
+    return _status
+
+
+def _probe_local() -> Optional[OfficialGenerator]:
+    """Load trained official weights once. Never treat a random network as trained."""
+    global _cached_model, _local_checked
     if _cached_model is not None:
+        _set_status(True, "local_trained", None)
         return _cached_model
-
-    weights = WEIGHTS_DIR / "housegan_pp.pt"
-    if not weights.exists():
+    if _local_checked:
         return None
-
+    _local_checked = True
+    path = checkpoint_path()
+    if not path.exists():
+        _set_status(False, "unavailable", "checkpoint_missing")
+        return None
     try:
         from .model import load_pretrained
-        _cached_model = load_pretrained(str(weights))
-        return _cached_model
+        model = load_pretrained(str(path), device=housegan_device())
+        _cached_model = model
+        _set_status(True, "local_trained", None)
+        return model
     except Exception as e:
         print(f"[HouseGAN] Failed to load local weights: {e}")
+        _cached_model = None
+        _set_status(False, "load_failed", f"load_failed: {e}")
         return None
+
+
+def get_housegan_status() -> HouseGANStatus:
+    """Local checkpoint probe only. Does not call the remote Space."""
+    if _cached_model is not None:
+        return _set_status(True, "local_trained", None)
+    if _remote_ok and _status and _status.source == "remote":
+        return _status
+    _probe_local()
+    if _status is not None:
+        return _status
+    return _set_status(False, "unavailable", "checkpoint_missing")
+
+
+def _log_status_once() -> None:
+    global _logged_status
+    if _logged_status:
+        return
+    _logged_status = True
+    st = get_housegan_status()
+    print(
+        f"[HouseGAN] available={st.available} source={st.source} "
+        f"reason={st.reason} remote_enabled={int(remote_enabled())}"
+    )
+
+
+def _get_local_model() -> Optional[OfficialGenerator]:
+    """Load HouseGAN++ from local trained weights if available."""
+    return _probe_local()
+
+
+def _high_occupancy_nodes(masks: torch.Tensor, threshold: float = 0.25) -> list[int]:
+    """Rooms whose tanh occupancy fraction is high enough to freeze for a refine pass."""
+    occ = masks
+    if occ.dim() == 4:
+        occ = occ[:, 0]
+    frac = (occ > 0).float().mean(dim=(1, 2))
+    return [i for i, v in enumerate(frac.tolist()) if v >= threshold]
 
 
 def _run_local(diagram: BubbleDiagram,
-               num_samples: int = 5) -> List[List[Dict]]:
-    """Run HouseGAN++ locally, return num_samples candidate layouts."""
+               num_samples: int = 5,
+               refine_passes: int = 1) -> List[List[Dict]]:
+    """Run official HouseGAN++ locally, return num_samples candidate layouts."""
     model = _get_local_model()
     if model is None:
         raise RuntimeError("No local HouseGAN++ weights found.")
 
-    N = diagram.n
-    room_types = torch.tensor(diagram.hg_type_vector, dtype=torch.long)
-    adj = torch.tensor(diagram.binary_adj, dtype=torch.float32)
-
+    device = next(model.parameters()).device
     results = []
+    refine_n = max(0, min(2, int(refine_passes)))
     with torch.no_grad():
         for _ in range(num_samples):
-            masks = model(room_types, adj)         # (N, 1, 64, 64)
-            masks_np = masks.cpu().numpy()
-            bboxes = masks_to_bboxes(masks_np)
+            z, given_m, given_y, given_w = pack_official_inputs(diagram, device=device)
+            masks = model(z, given_m, given_y, given_w)
+            for _pass in range(refine_n):
+                try:
+                    fixed = _high_occupancy_nodes(masks)
+                    if not fixed:
+                        break
+                    z, given_m, given_y, given_w = pack_official_inputs(
+                        diagram, device=device, z=z, prev_masks=masks, fixed_nodes=fixed,
+                    )
+                    masks = model(z, given_m, given_y, given_w)
+                except Exception:
+                    break
+            masks_np = official_masks_to_nchw(masks).detach().cpu().numpy()
+            # Official occupancy is tanh; treat values > 0 as occupied.
+            bboxes = masks_to_bboxes(masks_np, threshold=0.0)
             placed = scale_bboxes_to_feet(bboxes, diagram.rooms,
                                            diagram.house_w, diagram.house_h)
             placed = apply_us_conventions(placed, diagram.house_w, diagram.house_h)
@@ -315,6 +442,7 @@ async def generate_layouts(
     diagram: BubbleDiagram,
     num_variants: int = 3,
     mode: str = "auto",          # "auto" | "local" | "remote"
+    refine_passes: int = 1,
 ) -> List[List[Dict]]:
     """
     Generate floor plan room layouts from a bubble diagram.
@@ -322,26 +450,44 @@ async def generate_layouts(
     Returns num_variants candidate layouts, each as a list of room dicts
     with keys: id, name, type, x, y, width, height, zone.
 
-    Falls back gracefully:
-      local weights → HF remote → template fallback
+    Default: local trained checkpoint only. Remote HF is opt-in
+    (KIYUB_HOUSEGAN_REMOTE_ENABLED=1). Untrained networks are never used.
     """
-    # Try local first
+    global _remote_attempted, _remote_ok
+    _log_status_once()
+
     if mode in ("auto", "local"):
         model = _get_local_model()
         if model is not None:
             try:
-                return _run_local(diagram, num_samples=num_variants)
+                layouts = _run_local(
+                    diagram, num_samples=num_variants, refine_passes=refine_passes,
+                )
+                print(f"[HouseGAN] local inference produced {len(layouts)} layout(s)")
+                return layouts
             except Exception as e:
                 print(f"[HouseGAN] Local inference failed: {e}")
                 if mode == "local":
                     raise
 
-    # Try remote HF Space
     if mode in ("auto", "remote"):
+        if not remote_enabled():
+            if mode == "remote":
+                print("[HouseGAN] Remote requested but KIYUB_HOUSEGAN_REMOTE_ENABLED=0")
+            return []
+        if _remote_attempted and not _remote_ok:
+            print("[HouseGAN] Remote already unavailable this process; skipping")
+            return []
+        _remote_attempted = True
         try:
-            return await _run_remote(diagram, num_samples=num_variants)
+            layouts = await _run_remote(diagram, num_samples=num_variants)
+            _remote_ok = True
+            _set_status(True, "remote", None)
+            print(f"[HouseGAN] remote inference produced {len(layouts)} layout(s)")
+            return layouts
         except Exception as e:
+            _remote_ok = False
+            _set_status(False, "unavailable", "remote_unavailable")
             print(f"[HouseGAN] Remote inference failed: {e}")
 
-    # Both failed — return empty (caller should fall back to template layout)
     return []

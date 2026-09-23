@@ -1,4 +1,15 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
+import {
+  ArrowsOut,
+  ChatCircle,
+  Cube,
+  DownloadSimple,
+  House,
+  NotePencil,
+  SquaresFour,
+  Stack,
+  Path,
+} from '@phosphor-icons/react'
 import { FloorPlan, Room } from '../types/floorplan'
 import View3D from './View3D'
 import RoomInteriorView from './RoomInteriorView'
@@ -7,16 +18,33 @@ import SpecSchedule from './SpecSchedule'
 import CostPanel from './CostPanel'
 import DesignScore from './DesignScore'
 import ChatPanel from './ChatPanel'
-import { exportDxf } from '../api/client'
-import ArchPlan from './ArchPlan'
+import { exportPdf } from '../api/client'
+import ScenePlan2D from './ScenePlan2D'
+import { loadLiveScene } from '../scene-graph/edit/load-scene'
+import { PlanAnnotation } from './planAnnotations'
 
 interface Props {
   plan: FloorPlan
   onUpdate: (plan: FloorPlan) => void
+  readOnly?: boolean
+  projectId?: string
+  revisionId?: string
+  role?: string
+  dirty?: boolean
+  onSave?: () => void
+  comments?: PlanAnnotation[]
+  currentUserId?: string
+  allowAnnotations?: boolean
+  onAddAnnotation?: (payload: { body: string; x: number; y: number; object_id: string | null }) => void
+  onUpdateAnnotation?: (id: string, body: string) => void
+  onDeleteAnnotation?: (id: string) => void
+  onMoveAnnotation?: (id: string, x: number, y: number) => void
+  selectedAnnotationId?: string | null
+  onSelectAnnotation?: (id: string | null) => void
 }
 
 type MainTab = 'plan' | 'elevations' | 'spec' | 'cost' | 'score' | 'chat'
-type ViewMode = '2d' | 'exterior' | 'dollhouse' | 'walkthrough' | 'topview'
+export type ViewMode = '2d' | 'exterior' | 'dollhouse' | 'walkthrough' | 'topview'
 
 const TAB_LABELS: { id: MainTab; label: string }[] = [
   { id: 'plan', label: '2D / 3D Plan' },
@@ -24,48 +52,76 @@ const TAB_LABELS: { id: MainTab; label: string }[] = [
   { id: 'spec', label: 'Spec Schedule' },
   { id: 'cost', label: 'Cost Estimate' },
   { id: 'score', label: 'Design Score' },
-  { id: 'chat', label: '✦ AI Chat' },
+  { id: 'chat', label: 'AI Chat' },
 ]
 
-const VIEW_BUTTONS: { id: ViewMode; label: string; icon: string }[] = [
-  { id: '2d', label: '2D Plan', icon: '📐' },
-  { id: 'exterior', label: 'Exterior', icon: '🏠' },
-  { id: 'dollhouse', label: 'Dollhouse', icon: '🏘️' },
-  { id: 'walkthrough', label: 'Walk', icon: '🚶' },
-  { id: 'topview', label: 'Top View', icon: '⬜' },
+const VIEW_BUTTONS: { id: ViewMode; label: string; Icon: typeof SquaresFour }[] = [
+  { id: '2d', label: '2D Plan', Icon: SquaresFour },
+  { id: 'exterior', label: 'Exterior', Icon: House },
+  { id: 'dollhouse', label: 'Dollhouse', Icon: Cube },
+  { id: 'walkthrough', label: 'Walk', Icon: Path },
+  { id: 'topview', label: 'Top View', Icon: Stack },
 ]
 
-export default function FloorPlanEditor({ plan, onUpdate }: Props) {
+export default function FloorPlanEditor({
+  plan, onUpdate, readOnly = false, projectId, revisionId, role, dirty, onSave,
+  comments = [], currentUserId, allowAnnotations = false,
+  onAddAnnotation, onUpdateAnnotation, onDeleteAnnotation, onMoveAnnotation,
+  selectedAnnotationId: selectedAnnotationIdProp,
+  onSelectAnnotation: onSelectAnnotationProp,
+}: Props) {
   const [tab, setTab] = useState<MainTab>('plan')
   const [viewMode, setViewMode] = useState<ViewMode>('2d')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [interiorRoom, setInteriorRoom] = useState<Room | null>(null)
-  const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 })
+  const [narrow, setNarrow] = useState(false)
+  const [moreOpen, setMoreOpen] = useState(false)
+  const [commentMode, setCommentMode] = useState(false)
+  const [internalAnnotationId, setInternalAnnotationId] = useState<string | null>(null)
+  const [zoom, setZoom] = useState(1)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const liveScene = useMemo(() => loadLiveScene(plan, undefined, { projectId }), [plan, projectId])
+  const selectedAnnotationId = selectedAnnotationIdProp ?? internalAnnotationId
+  const [draft, setDraft] = useState<{ x: number; y: number; object_id: string | null; body: string } | null>(null)
+  const [exportError, setExportError] = useState<string | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    const obs = new ResizeObserver(() => {
-      if (containerRef.current) {
-        setCanvasSize({
-          width: containerRef.current.clientWidth,
-          height: containerRef.current.clientHeight,
-        })
-      }
-    })
-    if (containerRef.current) obs.observe(containerRef.current)
-    return () => obs.disconnect()
+    const mq = window.matchMedia('(max-width: 1200px)')
+    const sync = () => setNarrow(mq.matches)
+    sync()
+    mq.addEventListener('change', sync)
+    return () => mq.removeEventListener('change', sync)
   }, [])
 
   function updateRoomDim(roomId: string, field: 'width' | 'height', val: number) {
+    if (readOnly) return
     onUpdate({ ...plan, rooms: plan.rooms.map(r => (r.id === roomId ? { ...r, [field]: val } : r)) })
   }
 
+  function selectAnnotation(id: string | null) {
+    setInternalAnnotationId(id)
+    onSelectAnnotationProp?.(id)
+    const note = comments.find(c => c.id === id)
+    if (note?.object_id) setSelectedId(note.object_id)
+  }
+
+  useEffect(() => {
+    if (!selectedAnnotationIdProp) return
+    const note = comments.find(c => c.id === selectedAnnotationIdProp)
+    if (note?.object_id) setSelectedId(note.object_id)
+  }, [selectedAnnotationIdProp, comments])
+
+  const tabs = TAB_LABELS.filter(t => !(readOnly && t.id === 'chat'))
+  const primary = tabs.filter(t => !narrow || t.id === 'plan' || t.id === 'elevations' || t.id === 'spec')
+  const extra = tabs.filter(t => narrow && t.id !== 'plan' && t.id !== 'elevations' && t.id !== 'spec')
+
   const selectedRoom = plan.rooms.find(r => r.id === selectedId)
   const ceilH = plan.ceilingHeight ?? 9
+  const viewOnlyCopy = readOnly && (role === 'CLIENT' || role === 'MAIN_ADMIN' || role === 'IT_PERSONNEL')
 
   return (
     <div className="editor">
-      {/* Interior view overlay */}
       {interiorRoom && (
         <RoomInteriorView
           room={interiorRoom}
@@ -74,60 +130,154 @@ export default function FloorPlanEditor({ plan, onUpdate }: Props) {
         />
       )}
 
-      {/* ── Top toolbar ──────────────────────────────────────────────────── */}
+      {readOnly && (
+        <div className="editor-readonly-banner" role="status">
+          {viewOnlyCopy
+            ? 'Viewing published or client copy — editing disabled'
+            : 'View only — editing disabled'}
+        </div>
+      )}
+      {!readOnly && dirty && onSave && (
+        <div className="editor-unsaved">
+          Unsaved design
+          <button type="button" className="catalog-generate-btn" onClick={onSave}>Save revision</button>
+        </div>
+      )}
+
       <div className="editor-toolbar">
         <span className="editor-title">{plan.name}</span>
         <span className="editor-ceiling-tag">{ceilH}ft ceilings</span>
+        {role && <span className="editor-ceiling-tag">{role}</span>}
+        {projectId && revisionId && (
+          <span className="editor-ceiling-tag" title={`${projectId} / ${revisionId}`}>Rev</span>
+        )}
 
-        <div className="editor-tabs">
-          {TAB_LABELS.map(t => (
+        <div className="editor-tabs" role="tablist" aria-label="Design views">
+          {primary.map(t => (
             <button
+              type="button"
               key={t.id}
+              role="tab"
+              aria-selected={tab === t.id}
               className={`editor-tab ${tab === t.id ? 'active' : ''}`}
               onClick={() => setTab(t.id)}
             >
-              {t.label}
+              {t.id === 'chat' ? <><ChatCircle size={14} aria-hidden /> {t.label}</> : t.label}
             </button>
           ))}
+          {extra.length > 0 && (
+            <div className="editor-more">
+              <button type="button" className="editor-tab" aria-expanded={moreOpen} onClick={() => setMoreOpen(o => !o)}>
+                More
+              </button>
+              {moreOpen && (
+                <div className="editor-more-menu" role="menu">
+                  {extra.map(t => (
+                    <button
+                      type="button"
+                      key={t.id}
+                      role="menuitem"
+                      onClick={() => { setTab(t.id); setMoreOpen(false) }}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
-        <button className="export-btn" onClick={() => exportDxf(plan)}>↓ Export CAD</button>
+        <button
+          type="button"
+          className="export-btn"
+          onClick={async () => {
+            try {
+              setExportError(null)
+              await exportPdf(plan)
+            } catch {
+              setExportError('Could not export PDF.')
+            }
+          }}
+        >
+          <DownloadSimple size={16} aria-hidden /> Export PDF
+        </button>
+        {exportError && <span className="error-msg editor-export-error" role="alert">{exportError}</span>}
+        {allowAnnotations && viewMode === '2d' && tab === 'plan' && (
+          <button
+            type="button"
+            className={`export-btn ${commentMode ? 'active' : ''}`}
+            aria-pressed={commentMode}
+            onClick={() => { setCommentMode(v => !v); setDraft(null) }}
+          >
+            <NotePencil size={16} aria-hidden /> Note
+          </button>
+        )}
       </div>
 
-      {/* ── Tab content ──────────────────────────────────────────────────── */}
       {tab === 'plan' && (
         <div className="editor-body">
           <div className="editor-canvas" ref={containerRef}>
-            {/* View mode toggle — 5 modes */}
             <div className="plan-sub-controls">
-              <div className="view-toggle view-toggle-expanded">
+              <div className="view-toggle view-toggle-expanded" role="group" aria-label="View mode">
                 {VIEW_BUTTONS.map(btn => (
                   <button
+                    type="button"
                     key={btn.id}
                     className={viewMode === btn.id ? 'active' : ''}
+                    aria-pressed={viewMode === btn.id}
+                    aria-label={btn.label}
                     onClick={() => setViewMode(btn.id)}
                   >
-                    <span className="view-btn-icon">{btn.icon}</span>
+                    <span className="view-btn-icon"><btn.Icon size={16} /></span>
                     <span className="view-btn-label">{btn.label}</span>
                   </button>
                 ))}
               </div>
+              {viewMode === '2d' && (
+                <div className="architect-zoom">
+                  <button type="button" aria-label="Zoom in" onClick={() => setZoom(z => Math.min(4, z * 1.15))}>+</button>
+                  <button type="button" aria-label="Zoom out" onClick={() => setZoom(z => Math.max(0.4, z / 1.15))}>−</button>
+                </div>
+              )}
             </div>
 
             {viewMode === '2d' ? (
-              <ArchPlan
-                plan={plan}
-                selectedId={selectedId}
-                onSelect={setSelectedId}
-                containerWidth={canvasSize.width}
-                containerHeight={canvasSize.height}
+              <ScenePlan2D
+                scene={liveScene}
+                tool="select"
+                snapEnabled={false}
+                grid={0.3}
+                editingEnabled={false}
+                selected={selectedId ? { kind: 'room', id: selectedId } : null}
+                onSelect={sel => setSelectedId(sel?.kind === 'room' ? sel.id : sel ? sel.id : null)}
+                zoom={zoom}
+                pan={pan}
+                onPanZoom={(z, p) => { setZoom(z); setPan(p) }}
+                annotations={comments}
+                annotationMode={commentMode}
+                selectedAnnotationId={selectedAnnotationId}
+                currentUserId={currentUserId}
+                draft={draft}
+                onPlaceAnnotation={(x, y, roomId) => setDraft({ x, y, object_id: roomId, body: draft?.body || '' })}
+                onSelectAnnotation={selectAnnotation}
+                onDraftChange={body => setDraft(d => d ? { ...d, body } : d)}
+                onDraftSubmit={() => {
+                  if (!draft?.body.trim()) return
+                  onAddAnnotation?.({ body: draft.body.trim(), x: draft.x, y: draft.y, object_id: draft.object_id })
+                  setDraft(null)
+                  setCommentMode(false)
+                }}
+                onDraftCancel={() => setDraft(null)}
+                onUpdateAnnotation={onUpdateAnnotation}
+                onDeleteAnnotation={onDeleteAnnotation}
+                onMoveAnnotation={onMoveAnnotation}
               />
             ) : (
-              <View3D plan={plan} initialMode={viewMode} />
+              <View3D scene={liveScene} viewMode={viewMode} />
             )}
           </div>
 
-          {/* Inspector */}
           <div className="inspector">
             <div className="inspector-section">
               <div className="inspector-title">Rooms</div>
@@ -136,7 +286,15 @@ export default function FloorPlanEditor({ plan, onUpdate }: Props) {
                   <div
                     key={room.id}
                     className={`room-item ${room.id === selectedId ? 'selected' : ''}`}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => setSelectedId(room.id === selectedId ? null : room.id)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        setSelectedId(room.id === selectedId ? null : room.id)
+                      }
+                    }}
                   >
                     <div className="room-swatch" style={{ background: room.color }} />
                     <div style={{ flex: 1 }}>
@@ -146,10 +304,13 @@ export default function FloorPlanEditor({ plan, onUpdate }: Props) {
                       </div>
                     </div>
                     <button
+                      type="button"
                       className="room-interior-btn"
-                      title="View interior"
+                      aria-label={`View interior of ${room.name}`}
                       onClick={e => { e.stopPropagation(); setInteriorRoom(room) }}
-                    >↗</button>
+                    >
+                      <ArrowsOut size={14} />
+                    </button>
                   </div>
                 ))}
               </div>
@@ -157,21 +318,41 @@ export default function FloorPlanEditor({ plan, onUpdate }: Props) {
 
             {selectedRoom && (
               <div className="inspector-section room-edit">
-                <div className="inspector-title">Edit Room</div>
+                <div className="inspector-title">{readOnly ? 'Room' : 'Edit Room'}</div>
                 <div className="inspector-name">{selectedRoom.name}</div>
                 <div className="inspector-field">
-                  <label>Width (ft)</label>
-                  <input type="number" min={6} max={60} value={selectedRoom.width}
-                    onChange={e => { const v = parseFloat(e.target.value); if (!isNaN(v) && v >= 4) updateRoomDim(selectedRoom.id, 'width', v) }} />
+                  <label htmlFor="room-width">Width (ft)</label>
+                  <input
+                    id="room-width"
+                    type="number"
+                    min={6}
+                    max={60}
+                    value={selectedRoom.width}
+                    disabled={readOnly}
+                    onChange={e => {
+                      const v = parseFloat(e.target.value)
+                      if (!isNaN(v) && v >= 6) updateRoomDim(selectedRoom.id, 'width', v)
+                    }}
+                  />
                 </div>
                 <div className="inspector-field">
-                  <label>Depth (ft)</label>
-                  <input type="number" min={6} max={60} value={selectedRoom.height}
-                    onChange={e => { const v = parseFloat(e.target.value); if (!isNaN(v) && v >= 4) updateRoomDim(selectedRoom.id, 'height', v) }} />
+                  <label htmlFor="room-depth">Depth (ft)</label>
+                  <input
+                    id="room-depth"
+                    type="number"
+                    min={6}
+                    max={60}
+                    value={selectedRoom.height}
+                    disabled={readOnly}
+                    onChange={e => {
+                      const v = parseFloat(e.target.value)
+                      if (!isNaN(v) && v >= 6) updateRoomDim(selectedRoom.id, 'height', v)
+                    }}
+                  />
                 </div>
                 <div className="inspector-area">{Math.round(selectedRoom.width * selectedRoom.height).toLocaleString()} sq ft</div>
-                <button className="view-interior-btn" onClick={() => setInteriorRoom(selectedRoom)}>
-                  View Interior →
+                <button type="button" className="view-interior-btn" onClick={() => setInteriorRoom(selectedRoom)}>
+                  View Interior
                 </button>
               </div>
             )}
@@ -194,31 +375,31 @@ export default function FloorPlanEditor({ plan, onUpdate }: Props) {
       )}
 
       {tab === 'elevations' && (
-        <div className="tab-content-scroll">
+        <div className="tab-content-scroll" role="tabpanel">
           <ElevationView plan={plan} />
         </div>
       )}
 
       {tab === 'spec' && (
-        <div className="tab-content-scroll">
+        <div className="tab-content-scroll" role="tabpanel">
           <SpecSchedule plan={plan} />
         </div>
       )}
 
       {tab === 'cost' && (
-        <div className="tab-content-scroll">
+        <div className="tab-content-scroll" role="tabpanel">
           <CostPanel plan={plan} />
         </div>
       )}
 
       {tab === 'score' && (
-        <div className="tab-content-scroll">
+        <div className="tab-content-scroll" role="tabpanel">
           <DesignScore plan={plan} />
         </div>
       )}
 
-      {tab === 'chat' && (
-        <div className="tab-content-chat">
+      {tab === 'chat' && !readOnly && (
+        <div className="tab-content-chat" role="tabpanel">
           <ChatPanel plan={plan} onPlanUpdate={onUpdate} />
         </div>
       )}

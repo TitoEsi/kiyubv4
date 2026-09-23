@@ -20,10 +20,24 @@ frontend/.vite/
 .env
 .env.local
 .env.*.local
+backend/kiyub_workflow.db
+kiyub_workflow.db
+
+# Keep committed examples
+!.env.example
 
 # Cache files
 embed_cache.json
 *.cache
+backend/audit_last_run.json
+
+# HouseGAN++ trained weights (do not commit)
+backend/moe/housegan/weights/*.pt
+backend/moe/housegan/weights/*.pth
+backend/backend/moe/housegan/weights/*.pt
+backend/backend/moe/housegan/weights/*.pth
+**/*.pt
+**/*.pth
 
 # macOS
 .DS_Store
@@ -31,4 +45,5 @@ embed_cache.json
 # IDE
 .vscode/
 .idea/
+.cursor/
 *.swp

@@ -1,0 +1,76 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+
+class LoginBody(BaseModel):
+    email: str
+    password: str
+
+
+class RegisterBody(BaseModel):
+    email: str
+    password: str
+    role: str = "CLIENT"
+    invitation_token: str | None = None
+
+
+class ProjectCreate(BaseModel):
+    name: str
+    client_id: str | None = None
+    architect_id: str | None = None
+
+
+class ProjectAssign(BaseModel):
+    client_id: str | None = None
+    architect_id: str | None = None
+
+
+class BriefBody(BaseModel):
+    questionnaire: dict[str, Any]
+    specification: dict[str, Any] = Field(default_factory=dict)
+
+
+class CommentBody(BaseModel):
+    body: str
+    revision_id: str | None = None
+    object_id: str | None = None
+    stage: str | None = None
+    x: float | None = None
+    y: float | None = None
+
+
+class CommentPatch(BaseModel):
+    body: str | None = None
+    object_id: str | None = None
+    x: float | None = None
+    y: float | None = None
+
+
+class DesignBody(BaseModel):
+    floor_plan: dict[str, Any]
+    expected_revision_id: str | None = None
+    scene_document: dict[str, Any] | None = None
+
+
+class WorkingDesignBody(BaseModel):
+    scene_document: dict[str, Any]
+
+
+class AccountPatch(BaseModel):
+    approved: bool | None = None
+    role: str | None = None
+
+
+class InvitationCreate(BaseModel):
+    email: str
+    resend: bool = False
+
+
+class InquiryCreate(BaseModel):
+    name: str
+    email: str
+    message: str

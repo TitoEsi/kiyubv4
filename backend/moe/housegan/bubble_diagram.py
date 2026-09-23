@@ -235,7 +235,6 @@ def build_bubble_diagram(constraints: dict) -> BubbleDiagram:
     if garage != "none":
         area = {"1car": 240, "2car": 480, "3car": 680}[garage]
         add("garage", "Garage", "garage", HG_TYPES["garage"], area)
-        add("mudroom", "Mudroom", "mudroom", HG_TYPES["mudroom"], 60)
 
     # ── Outdoor ──────────────────────────────────────────────────────────────
     if outdoor in ("patio", "both"):
@@ -258,13 +257,11 @@ def build_bubble_diagram(constraints: dict) -> BubbleDiagram:
     connect("foyer",   "great",    1.0)
     connect("foyer",   "hall",     1.0)
     connect("foyer",   "garage",   0.8)
-    connect("foyer",   "mudroom",  0.9)
 
     connect("kitchen", "dining",   1.0)
     connect("kitchen", "great",    0.9)
     connect("kitchen", "living",   0.7)
     connect("kitchen", "laundry",  0.7)
-    connect("kitchen", "mudroom",  0.7)
     connect("kitchen", "patio",    0.6)
 
     connect("living",  "dining",   0.8)
@@ -281,8 +278,9 @@ def build_bubble_diagram(constraints: dict) -> BubbleDiagram:
     connect("bed1",    "ensuite",  1.0)
     connect("bed1",    "wcloset",  1.0)
 
-    connect("garage",  "mudroom",  1.0)
-    connect("mudroom", "hall",     0.8)
+    connect("garage",  "foyer",    0.8)
+    connect("garage",  "laundry",  0.6)
+    connect("garage",  "hall",     0.5)
 
     # ── Compute target footprint ───────────────────────────────────────────
     total_area = sum(r.area_sqft for r in rooms
@@ -294,6 +292,22 @@ def build_bubble_diagram(constraints: dict) -> BubbleDiagram:
     if garage == "3car": W = max(W, 58.0)
     W = max(W, 36.0)
     H = round(fp / W, 1)
+
+    cap_w = cap_h = None
+    if constraints.get("lotWidth") and constraints.get("lotDepth"):
+        try:
+            from solver.envelope import compute_buildable_envelope
+            env = compute_buildable_envelope(constraints)
+            cap_w = float(env["buildable_width"])
+            cap_h = float(env["buildable_depth"])
+        except Exception:
+            cap_w = cap_h = None
+    if cap_w and cap_w > 0:
+        W = min(W, cap_w)
+    if cap_h and cap_h > 0:
+        H = min(H, cap_h)
+    W = max(W, 1.0)
+    H = max(H, 1.0)
 
     return BubbleDiagram(rooms=rooms, adj_matrix=adj, house_w=W, house_h=H)
 

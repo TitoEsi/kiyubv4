@@ -1,11 +1,23 @@
-import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
+import { useRef, useEffect, useLayoutEffect, useMemo } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import { OrbitControls, Sky, PerspectiveCamera, Text, Html } from '@react-three/drei'
+import { OrbitControls, Text, Html } from '@react-three/drei'
 import * as THREE from 'three'
-import { FloorPlan } from '../types/floorplan'
+import { FloorPlan, roomBoundary, roomCentroid, roomParts } from '../types/floorplan'
+import type { SceneDocument } from '../scene-graph/types'
+import { sceneDocumentToFloorPlan } from '../scene-graph/adapters/scene-document-to-floorplan'
+import { SceneBuilding, sceneBuildingBounds } from './scene-3d-meshes'
+import { mToFt } from '../scene-graph/units'
+import {
+  VIEW3D_SCALE,
+  buildingBounds,
+  viewCameraConfig,
+  walkStartPosition,
+  type View3DMode,
+  type ViewCameraConfig,
+} from './view3d-camera'
 
-const S = 0.09   // 1 ft = 0.09 THREE units
-type Mode = 'exterior' | 'dollhouse' | 'walkthrough' | 'topview'
+const S = VIEW3D_SCALE
+type Mode = View3DMode
 
 const WALL_COLOR = '#e2e6ec'
 const WT = 0.022  // wall thickness
@@ -15,7 +27,70 @@ const WT = 0.022  // wall thickness
 // ─────────────────────────────────────────────────────────────────────────────
 
 function roomCenter(room: FloorPlan['rooms'][number]): [number, number, number] {
-  return [(room.x + room.width / 2) * S, 0, (room.y + room.height / 2) * S]
+  const c = roomCentroid(room)
+  return [c.x * S, 0, c.y * S]
+}
+
+function FloorParts({
+  room, y, height, color, extra = 0,
+}: {
+  room: FloorPlan['rooms'][number]
+  y: number
+  height: number
+  color: string
+  extra?: number
+}) {
+  return (
+    <>
+      {roomParts(room).map((p, i) => {
+        const rw = p.width * S
+        const rd = p.height * S
+        const px = (p.x + p.width / 2) * S
+        const pz = (p.y + p.height / 2) * S
+        return (
+          <mesh key={`${room.id}-p${i}`} position={[px, y, pz]} castShadow receiveShadow>
+            <boxGeometry args={[rw + extra, height, rd + extra]} />
+            <meshStandardMaterial color={color} roughness={0.82} metalness={0.0} />
+          </mesh>
+        )
+      })}
+    </>
+  )
+}
+
+function WallSegments({
+  room, wallH, color,
+}: {
+  room: FloorPlan['rooms'][number]
+  wallH: number
+  color: string
+}) {
+  const segs = roomBoundary(room)
+  if (!segs.length) return null
+  return (
+    <>
+      {segs.map((seg, i) => {
+        const dx = (seg.x2 - seg.x1) * S
+        const dz = (seg.y2 - seg.y1) * S
+        const len = Math.hypot(dx, dz)
+        if (len < 1e-6) return null
+        const mx = ((seg.x1 + seg.x2) / 2) * S
+        const mz = ((seg.y1 + seg.y2) / 2) * S
+        const rot = Math.atan2(dz, dx)
+        return (
+          <mesh
+            key={`${room.id}-w${i}`}
+            position={[mx, wallH / 2, mz]}
+            rotation={[0, -rot, 0]}
+            castShadow
+          >
+            <boxGeometry args={[len, wallH, WT]} />
+            <meshStandardMaterial color={color} roughness={0.78} />
+          </mesh>
+        )
+      })}
+    </>
+  )
 }
 
 // Removed frontend findDoors in favor of backend plan.doors data
@@ -41,51 +116,21 @@ function ArchitecturalHouse({ plan, wallH }: { plan: FloorPlan; wallH: number })
     <>
       {/* 🏠 Main house volume — one solid white box per room (they merge visually) */}
       {rooms.map(room => {
-        const rw = room.width * S
-        const rd = room.height * S
-        const px = (room.x + room.width / 2) * S
-        const pz = (room.y + room.height / 2) * S
-
-        // Vary heights slightly by zone for realistic massing
         const isGarage = room.type === 'garage'
         const h = isGarage ? wallH * 0.88 : wallH
-
-        return (
-          <mesh key={room.id} position={[px, h / 2, pz]} castShadow receiveShadow>
-            <boxGeometry args={[rw, h, rd]} />
-            <meshStandardMaterial color={WHITE} roughness={0.82} metalness={0.0} />
-          </mesh>
-        )
+        return <FloorParts key={room.id} room={room} y={h / 2} height={h} color={WHITE} />
       })}
 
       {/* 🌿 Outdoor / patio areas — flat slab, slightly different tone */}
-      {outdoor.map(room => {
-        const rw = room.width * S
-        const rd = room.height * S
-        const px = (room.x + room.width / 2) * S
-        const pz = (room.y + room.height / 2) * S
-        return (
-          <mesh key={room.id} position={[px, 0.018, pz]} receiveShadow>
-            <boxGeometry args={[rw, 0.036, rd]} />
-            <meshStandardMaterial color="#d4dce8" roughness={0.92} />
-          </mesh>
-        )
-      })}
+      {outdoor.map(room => (
+        <FloorParts key={room.id} room={room} y={0.018} height={0.036} color="#d4dce8" />
+      ))}
 
       {/* Edge cap on top to create crisp roofline edge */}
       {rooms.map(room => {
-        const rw = room.width * S
-        const rd = room.height * S
-        const px = (room.x + room.width / 2) * S
-        const pz = (room.y + room.height / 2) * S
         const isGarage = room.type === 'garage'
         const h = isGarage ? wallH * 0.88 : wallH
-        return (
-          <mesh key={`cap-${room.id}`} position={[px, h - 0.005, pz]}>
-            <boxGeometry args={[rw + 0.008, 0.012, rd + 0.008]} />
-            <meshStandardMaterial color={EDGE} roughness={0.9} />
-          </mesh>
-        )
+        return <FloorParts key={`cap-${room.id}`} room={room} y={h - 0.005} height={0.012} color={EDGE} extra={0.008} />
       })}
     </>
   )
@@ -235,39 +280,22 @@ function ArchitecturalDetails({ plan, wallH }: { plan: FloorPlan; wallH: number 
 // ─────────────────────────────────────────────────────────────────────────────
 
 function RoomDollhouse({ room, wallH }: { room: FloorPlan['rooms'][number]; wallH: number }) {
-  const rw = room.width * S
-  const rd = room.height * S
-  const px = (room.x + room.width / 2) * S
-  const pz = (room.y + room.height / 2) * S
+  const c = roomCentroid(room)
+  const parts = roomParts(room)
+  const segs = roomBoundary(room)
+  const minDim = Math.min(...parts.map(p => Math.min(p.width, p.height)), room.width, room.height)
 
   return (
-    <group position={[px, 0, pz]}>
-      <mesh position={[0, WT / 2, 0]} receiveShadow>
-        <boxGeometry args={[rw, WT, rd]} />
-        <meshStandardMaterial color={room.color} roughness={0.88} />
-      </mesh>
-      <mesh position={[0, wallH / 2, -rd / 2 + WT / 2]} castShadow>
-        <boxGeometry args={[rw, wallH, WT]} />
-        <meshStandardMaterial color={WALL_COLOR} roughness={0.78} />
-      </mesh>
-      <mesh position={[0, wallH / 2, rd / 2 - WT / 2]} castShadow>
-        <boxGeometry args={[rw, wallH, WT]} />
-        <meshStandardMaterial color={WALL_COLOR} roughness={0.78} />
-      </mesh>
-      <mesh position={[-rw / 2 + WT / 2, wallH / 2, 0]} castShadow>
-        <boxGeometry args={[WT, wallH, rd]} />
-        <meshStandardMaterial color={WALL_COLOR} roughness={0.78} />
-      </mesh>
-      <mesh position={[rw / 2 - WT / 2, wallH / 2, 0]} castShadow>
-        <boxGeometry args={[WT, wallH, rd]} />
-        <meshStandardMaterial color={WALL_COLOR} roughness={0.78} />
-      </mesh>
-      {/* Room label on floor */}
+    <group>
+      <FloorParts room={room} y={WT / 2} height={WT} color={room.color} />
+      {segs.length > 0 ? (
+        <WallSegments room={room} wallH={wallH} color={WALL_COLOR} />
+      ) : null}
       <Text
-        position={[0, WT + 0.005, 0]}
+        position={[c.x * S, WT + 0.005, c.y * S]}
         rotation={[-Math.PI / 2, 0, 0]}
-        fontSize={Math.min(rw, rd) * 0.18}
-        color="#1a1a1a80" // Hex with alpha (50%)
+        fontSize={minDim * S * 0.18}
+        color="#1a1a1a80"
         anchorX="center"
         anchorY="middle"
       >
@@ -282,54 +310,27 @@ function RoomDollhouse({ room, wallH }: { room: FloorPlan['rooms'][number]; wall
 // ─────────────────────────────────────────────────────────────────────────────
 
 function WalkthroughRoom({ room, wallH }: { room: FloorPlan['rooms'][number]; wallH: number }) {
-  const rw = room.width * S
-  const rd = room.height * S
-  const px = (room.x + room.width / 2) * S
-  const pz = (room.y + room.height / 2) * S
+  const c = roomCentroid(room)
+  const parts = roomParts(room)
+  const segs = roomBoundary(room)
+  const minDim = Math.min(...parts.map(p => Math.min(p.width, p.height)), room.width, room.height)
 
   return (
-    <group position={[px, 0, pz]}>
-      {/* Floor */}
-      <mesh position={[0, 0.005, 0]} receiveShadow>
-        <boxGeometry args={[rw, 0.01, rd]} />
-        <meshStandardMaterial color={room.color} roughness={0.85} />
-      </mesh>
-      {/* Walls — slightly transparent for visibility */}
-      <mesh position={[0, wallH / 2, -rd / 2 + WT / 2]} castShadow>
-        <boxGeometry args={[rw, wallH, WT]} />
-        <meshStandardMaterial color="#e8ecf2" roughness={0.7} />
-      </mesh>
-      <mesh position={[0, wallH / 2, rd / 2 - WT / 2]} castShadow>
-        <boxGeometry args={[rw, wallH, WT]} />
-        <meshStandardMaterial color="#e8ecf2" roughness={0.7} />
-      </mesh>
-      <mesh position={[-rw / 2 + WT / 2, wallH / 2, 0]} castShadow>
-        <boxGeometry args={[WT, wallH, rd]} />
-        <meshStandardMaterial color="#e8ecf2" roughness={0.7} />
-      </mesh>
-      <mesh position={[rw / 2 - WT / 2, wallH / 2, 0]} castShadow>
-        <boxGeometry args={[WT, wallH, rd]} />
-        <meshStandardMaterial color="#e8ecf2" roughness={0.7} />
-      </mesh>
-      {/* Room label on north wall */}
+    <group>
+      <FloorParts room={room} y={0.005} height={0.01} color={room.color} />
+      {segs.length > 0 ? (
+        <WallSegments room={room} wallH={wallH} color="#e8ecf2" />
+      ) : null}
       <Text
-        position={[0, wallH * 0.6, -rd / 2 + WT + 0.01]}
+        position={[c.x * S, wallH * 0.6, (parts[0] ? parts[0].y : room.y) * S + 0.02]}
         fontSize={wallH * 0.12}
         color="#475569"
         anchorX="center"
         anchorY="middle"
+        maxWidth={minDim * S * 0.9}
       >
         {room.name}
       </Text>
-      {/* Baseboard trim */}
-      <mesh position={[0, 0.015, -rd / 2 + WT / 2]}>
-        <boxGeometry args={[rw, 0.03, WT + 0.005]} />
-        <meshStandardMaterial color="#c5cbd6" roughness={0.8} />
-      </mesh>
-      <mesh position={[0, 0.015, rd / 2 - WT / 2]}>
-        <boxGeometry args={[rw, 0.03, WT + 0.005]} />
-        <meshStandardMaterial color="#c5cbd6" roughness={0.8} />
-      </mesh>
     </group>
   )
 }
@@ -378,13 +379,8 @@ function FirstPersonController({ plan, wallH }: { plan: FloorPlan; wallH: number
   const isLocked = useRef(false)
   const speed = 0.025
 
-  // Start in the center of the first room
-  const startRoom = plan.rooms[0]
-  const startPos = useRef(new THREE.Vector3(
-    (startRoom.x + startRoom.width / 2) * S,
-    wallH * 0.62,  // eye level ~5.5ft
-    (startRoom.y + startRoom.height / 2) * S
-  ))
+  const start = walkStartPosition(plan.rooms, wallH)
+  const startPos = useRef(new THREE.Vector3(start[0], start[1], start[2]))
 
   // Set initial camera position
   useEffect(() => {
@@ -517,51 +513,41 @@ const ZONE_COLORS: Record<string, string> = {
 }
 
 function TopViewBlock({ room, blockH }: { room: FloorPlan['rooms'][number]; blockH: number }) {
-  const rw = room.width * S
-  const rd = room.height * S
-  const px = (room.x + room.width / 2) * S
-  const pz = (room.y + room.height / 2) * S
   const color = ZONE_COLORS[room.type] || room.color || '#dce0e8'
+  const c = roomCentroid(room)
+  const parts = roomParts(room)
+  const minDim = Math.min(...parts.map(p => Math.min(p.width, p.height)), room.width, room.height) * S
 
   return (
-    <group position={[px, 0, pz]}>
-      {/* 3D block */}
-      <mesh position={[0, blockH / 2, 0]} castShadow receiveShadow>
-        <boxGeometry args={[rw - 0.01, blockH, rd - 0.01]} />
-        <meshStandardMaterial color={color} roughness={0.75} metalness={0.05} />
-      </mesh>
-      {/* Top edge highlight */}
-      <mesh position={[0, blockH, 0]}>
-        <boxGeometry args={[rw, 0.004, rd]} />
-        <meshStandardMaterial color="#FFFFFF" roughness={0.5} transparent opacity={0.3} />
-      </mesh>
-      {/* Block outline (wireframe) */}
-      <lineSegments position={[0, blockH / 2, 0]}>
-        <edgesGeometry args={[new THREE.BoxGeometry(rw - 0.005, blockH + 0.002, rd - 0.005)]} />
-        <lineBasicMaterial color="#00000030" />
-      </lineSegments>
-      {/* Room label */}
+    <group>
+      {parts.map((p, i) => {
+        const rw = p.width * S
+        const rd = p.height * S
+        const px = (p.x + p.width / 2) * S
+        const pz = (p.y + p.height / 2) * S
+        return (
+          <group key={i} position={[px, 0, pz]}>
+            <mesh position={[0, blockH / 2, 0]} castShadow receiveShadow>
+              <boxGeometry args={[rw - 0.01, blockH, rd - 0.01]} />
+              <meshStandardMaterial color={color} roughness={0.75} metalness={0.05} />
+            </mesh>
+            <mesh position={[0, blockH, 0]}>
+              <boxGeometry args={[rw, 0.004, rd]} />
+              <meshStandardMaterial color="#FFFFFF" roughness={0.5} transparent opacity={0.3} />
+            </mesh>
+          </group>
+        )
+      })}
       <Text
-        position={[0, blockH + 0.03, 0]}
+        position={[c.x * S, blockH + 0.03, c.y * S]}
         rotation={[-Math.PI / 2, 0, 0]}
-        fontSize={Math.min(rw, rd) * 0.22}
+        fontSize={minDim * 0.22}
         color="#1e293b"
         anchorX="center"
         anchorY="middle"
-        maxWidth={rw * 0.9}
+        maxWidth={minDim * 0.9}
       >
         {room.name}
-      </Text>
-      {/* Size label below name */}
-      <Text
-        position={[0, blockH + 0.02, Math.min(rw, rd) * 0.15]}
-        rotation={[-Math.PI / 2, 0, 0]}
-        fontSize={Math.min(rw, rd) * 0.13}
-        color="#64748b"
-        anchorX="center"
-        anchorY="middle"
-      >
-        {`${room.width}'×${room.height}'`}
       </Text>
     </group>
   )
@@ -578,8 +564,8 @@ function WalkthroughHUD({ plan }: { plan: FloorPlan }) {
       <div className="walkthrough-crosshair">+</div>
       {/* Controls hint */}
       <div className="walkthrough-hint">
-        <div>🖱️ Click to look around</div>
-        <div>⌨️ WASD or arrows to walk</div>
+        <div>Click to look around</div>
+        <div>WASD or arrows to walk</div>
         <div>ESC to release cursor</div>
       </div>
       {/* Minimap */}
@@ -599,100 +585,122 @@ function WalkthroughHUD({ plan }: { plan: FloorPlan }) {
   )
 }
 
+function ActiveCamera({ viewMode, config }: { viewMode: Mode; config: ViewCameraConfig }) {
+  const { set, size } = useThree()
+  const [px, py, pz] = config.position
+  const [tx, ty, tz] = config.target
+  const [ux, uy, uz] = config.up ?? [0, 1, 0]
+  useLayoutEffect(() => {
+    const aspect = size.width / Math.max(size.height, 1)
+    let next: THREE.PerspectiveCamera | THREE.OrthographicCamera
+    if (config.kind === 'orthographic') {
+      const hw = config.halfWidth ?? 4
+      const hh = config.halfHeight ?? 4
+      const buildingAspect = hw / Math.max(hh, 1e-6)
+      const ortho = new THREE.OrthographicCamera(-hw, hw, hh, -hh, 0.1, 80)
+      if (aspect > buildingAspect) {
+        ortho.left = -hh * aspect
+        ortho.right = hh * aspect
+        ortho.top = hh
+        ortho.bottom = -hh
+      } else {
+        ortho.left = -hw
+        ortho.right = hw
+        ortho.top = hw / aspect
+        ortho.bottom = -hw / aspect
+      }
+      next = ortho
+    } else {
+      next = new THREE.PerspectiveCamera(config.fov ?? 50, aspect, 0.1, 100)
+    }
+    next.position.set(px, py, pz)
+    next.up.set(ux, uy, uz)
+    next.lookAt(tx, ty, tz)
+    next.updateProjectionMatrix()
+    set({ camera: next })
+  }, [viewMode, config.kind, config.fov, config.halfWidth, config.halfHeight, px, py, pz, tx, ty, tz, ux, uy, uz, set, size.width, size.height])
+  return null
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // MAIN COMPONENT
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface Props {
-  plan: FloorPlan
-  initialMode?: Mode
+  plan?: FloorPlan
+  scene?: SceneDocument
+  viewMode: Mode
 }
 
-export default function View3D({ plan, initialMode }: Props) {
-  const [mode, setMode] = useState<Mode>(initialMode || 'exterior')
+export default function View3D({ plan, scene, viewMode }: Props) {
+  const resolved = useMemo(() => scene ? sceneDocumentToFloorPlan(scene) : plan!, [scene, plan])
+  const wallH = scene
+    ? mToFt(scene.walls[0]?.height || scene.floorData[0]?.height || 2.74) * S
+    : (resolved.ceilingHeight ?? 9) * S
+  const bounds = useMemo(
+    () => scene ? sceneBuildingBounds(scene) : buildingBounds(resolved),
+    [scene, resolved],
+  )
+  const walkStart = useMemo(() => {
+    if (scene?.rooms[0]) {
+      const r = scene.rooms[0]
+      const cx = mToFt(r.position.x + r.dimensions.width / 2) * S
+      const cz = mToFt(r.position.y + r.dimensions.height / 2) * S
+      return [cx, wallH * 0.62, cz] as [number, number, number]
+    }
+    return walkStartPosition(resolved.rooms, wallH)
+  }, [scene, resolved.rooms, wallH])
+  const cam = viewCameraConfig(viewMode, bounds, wallH, walkStart)
+  const cx = bounds.cx
+  const cz = bounds.cz
 
-  const wallH = (plan.ceilingHeight ?? 9) * S
-  const cx = plan.totalWidth * S / 2
-  const cz = plan.totalHeight * S / 2
-
-  const doors = plan.doors || []
-
-  // Camera positions for each mode
-  const extCam: [number, number, number] = [
-    cx + plan.totalWidth * S * 0.65,
-    wallH * 1.2,
-    cz + plan.totalHeight * S * 2.2,
-  ]
-  const dhCam: [number, number, number] = [
-    cx + plan.totalWidth * S * 0.55,
-    wallH * 5.5,
-    cz + plan.totalHeight * S * 1.4,
-  ]
-  const topCam: [number, number, number] = [
-    cx, wallH * 8, cz + 0.01,
-  ]
-
-  const modeButtons: { id: Mode; label: string; icon: string }[] = [
-    { id: 'exterior', label: 'Exterior', icon: '🏠' },
-    { id: 'dollhouse', label: 'Dollhouse', icon: '🏘️' },
-    { id: 'walkthrough', label: 'Walk', icon: '🚶' },
-    { id: 'topview', label: 'Top View', icon: '⬜' },
-  ]
+  const doors = resolved.doors || []
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
-
-      {/* ── Mode toggle overlay ── */}
-      <div className="view3d-mode-toggle">
-        {modeButtons.map(btn => (
-          <button
-            key={btn.id}
-            className={mode === btn.id ? 'active' : ''}
-            onClick={() => setMode(btn.id)}
-          >
-            <span>{btn.icon}</span> {btn.label}
-          </button>
-        ))}
-      </div>
-
-      {/* ── Walkthrough HUD ── */}
-      {mode === 'walkthrough' && <WalkthroughHUD plan={plan} />}
+      {viewMode === 'walkthrough' && <WalkthroughHUD plan={resolved} />}
 
       <Canvas
-        key={mode}
         shadows
-        style={{ width: '100%', height: '100%', cursor: mode === 'walkthrough' ? 'crosshair' : 'grab' }}
+        style={{ width: '100%', height: '100%', cursor: viewMode === 'walkthrough' ? 'crosshair' : 'grab' }}
         gl={{ antialias: true }}
       >
-        {/* ── EXTERIOR MODE ── */}
-        {mode === 'exterior' && (
-          <>
-            <PerspectiveCamera makeDefault position={extCam} fov={44} />
-            <color attach="background" args={['#BDD8EE']} />
-            <Sky sunPosition={[55, 16, 22]} turbidity={4.5} rayleigh={0.65} />
+        <ActiveCamera viewMode={viewMode} config={cam} />
 
-            <ambientLight intensity={0.65} color="#f4f6fb" />
+        {/* ── EXTERIOR MODE ── */}
+        {viewMode === 'exterior' && (
+          <>
+            <color attach="background" args={['#0B0D10']} />
+
+            <ambientLight intensity={0.35} color="#c8cdd3" />
             <directionalLight
-              position={[10, 18, 9]} intensity={1.6} color="#eef2f9"
+              position={[10, 18, 9]} intensity={1.1} color="#e8e6df"
               castShadow
               shadow-mapSize-width={2048} shadow-mapSize-height={2048}
               shadow-camera-left={-16} shadow-camera-right={16}
               shadow-camera-top={16} shadow-camera-bottom={-16}
               shadow-camera-far={60}
             />
-            <directionalLight position={[-7, 7, -5]} intensity={0.28} color="#B8D4FF" />
+            <directionalLight position={[-7, 7, -5]} intensity={0.18} color="#8aa0b0" />
 
             <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow position={[cx, 0, cz]}>
-              <planeGeometry args={[plan.totalWidth * S * 7, plan.totalHeight * S * 7]} />
-              <meshStandardMaterial color="#497850" roughness={0.93} />
+              <planeGeometry args={[bounds.spanX * 7, bounds.spanZ * 7]} />
+              <meshStandardMaterial color="#15181D" roughness={0.96} />
             </mesh>
 
-            <ArchitecturalHouse plan={plan} wallH={wallH} />
-            <ArchitecturalDetails plan={plan} wallH={wallH} />
-            <ArchitecturalRoof plan={plan} wallH={wallH} />
+            {scene ? (
+              <SceneBuilding scene={scene} wallH={wallH} />
+            ) : (
+              <>
+                <ArchitecturalHouse plan={resolved} wallH={wallH} />
+                <ArchitecturalDetails plan={resolved} wallH={wallH} />
+                <ArchitecturalRoof plan={resolved} wallH={wallH} />
+              </>
+            )}
 
             <OrbitControls
-              target={[cx, wallH * 0.44, cz]}
+              key={viewMode}
+              target={cam.target}
               minDistance={1} maxDistance={30}
               maxPolarAngle={Math.PI / 2 - 0.03}
             />
@@ -700,33 +708,35 @@ export default function View3D({ plan, initialMode }: Props) {
         )}
 
         {/* ── DOLLHOUSE MODE ── */}
-        {mode === 'dollhouse' && (
+        {viewMode === 'dollhouse' && (
           <>
-            <PerspectiveCamera makeDefault position={dhCam} fov={52} />
-            <color attach="background" args={['#e8ecf2']} />
+            <color attach="background" args={['#0B0D10']} />
 
-            <ambientLight intensity={1.3} color="#FFFFFF" />
+            <ambientLight intensity={0.55} color="#d7dbe0" />
             <directionalLight
-              position={[cx, wallH * 7, cz + plan.totalHeight * S * 0.8]}
-              intensity={0.7} color="#f1f5f9"
+              position={[cx, wallH * 7, cz + resolved.totalHeight * S * 0.8]}
+              intensity={0.85} color="#f2f1ed"
               castShadow
               shadow-mapSize-width={2048} shadow-mapSize-height={2048}
               shadow-camera-left={-20} shadow-camera-right={20}
               shadow-camera-top={20} shadow-camera-bottom={-20}
             />
-            <directionalLight position={[cx, wallH * 0.5, cz + plan.totalHeight * S * 3]} intensity={0.4} color="#FFFFFF" />
+            <directionalLight position={[cx, wallH * 0.5, cz + bounds.spanZ * 3]} intensity={0.25} color="#9ba3ae" />
 
             <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow position={[cx, 0, cz]}>
-              <planeGeometry args={[plan.totalWidth * S * 2.5, plan.totalHeight * S * 2.5]} />
-              <meshStandardMaterial color="#cbd5e1" roughness={0.96} />
+              <planeGeometry args={[bounds.spanX * 2.5, bounds.spanZ * 2.5]} />
+              <meshStandardMaterial color="#15181D" roughness={0.96} />
             </mesh>
 
-            {plan.rooms.map(room => (
+            {scene ? (
+              <SceneBuilding scene={scene} wallH={wallH} />
+            ) : resolved.rooms.map(room => (
               <RoomDollhouse key={room.id} room={room} wallH={wallH} />
             ))}
 
             <OrbitControls
-              target={[cx, 0, cz]}
+              key={viewMode}
+              target={cam.target}
               minDistance={0.5} maxDistance={22}
               maxPolarAngle={Math.PI / 2 - 0.01}
             />
@@ -734,75 +744,77 @@ export default function View3D({ plan, initialMode }: Props) {
         )}
 
         {/* ── WALKTHROUGH MODE ── */}
-        {mode === 'walkthrough' && (
+        {viewMode === 'walkthrough' && (
           <>
-            <color attach="background" args={['#e2e8f0']} />
+            <color attach="background" args={['#0B0D10']} />
 
-            <ambientLight intensity={0.5} color="#f8fafc" />
+            <ambientLight intensity={0.4} color="#d4d0c8" />
             <directionalLight
               position={[cx, wallH * 4, cz]}
-              intensity={1.2} color="#f1f5f9"
+              intensity={0.9} color="#f2f1ed"
               castShadow
               shadow-mapSize-width={2048} shadow-mapSize-height={2048}
               shadow-camera-left={-20} shadow-camera-right={20}
               shadow-camera-top={20} shadow-camera-bottom={-20}
             />
             {/* Fill lights from corners */}
-            <pointLight position={[0, wallH * 0.7, 0]} intensity={0.3} color="#e0e7ef" />
-            <pointLight position={[plan.totalWidth * S, wallH * 0.7, plan.totalHeight * S]} intensity={0.3} color="#e0e7ef" />
+            <pointLight position={[0, wallH * 0.7, 0]} intensity={0.25} color="#c5b8a4" />
+            <pointLight position={[bounds.maxX, wallH * 0.7, bounds.maxZ]} intensity={0.25} color="#c5b8a4" />
 
             {/* Base ground plane */}
             <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow position={[cx, -0.01, cz]}>
-              <planeGeometry args={[plan.totalWidth * S * 3, plan.totalHeight * S * 3]} />
-              <meshStandardMaterial color="#94a3b8" roughness={0.95} />
+              <planeGeometry args={[bounds.spanX * 3, bounds.spanZ * 3]} />
+              <meshStandardMaterial color="#15181D" roughness={0.95} />
             </mesh>
 
-            {/* Rooms */}
-            {plan.rooms.map(room => (
-              <WalkthroughRoom key={room.id} room={room} wallH={wallH} />
-            ))}
+            {scene ? (
+              <SceneBuilding scene={scene} wallH={wallH} />
+            ) : (
+              <>
+                {resolved.rooms.map(room => (
+                  <WalkthroughRoom key={room.id} room={room} wallH={wallH} />
+                ))}
+                <DoorOpenings doors={doors} wallH={wallH} />
+              </>
+            )}
 
-            {/* Door openings */}
-            <DoorOpenings doors={doors} wallH={wallH} />
-
-            <FirstPersonController plan={plan} wallH={wallH} />
+            <FirstPersonController plan={resolved} wallH={wallH} />
           </>
         )}
 
         {/* ── TOP VIEW MODE ── */}
-        {mode === 'topview' && (
+        {viewMode === 'topview' && (
           <>
-            <PerspectiveCamera makeDefault position={topCam} fov={50} />
-            <color attach="background" args={['#e8eef5']} />
+            <color attach="background" args={['#0B0D10']} />
 
-            <ambientLight intensity={1.0} color="#FFFFFF" />
+            <ambientLight intensity={0.5} color="#d7dbe0" />
             <directionalLight
               position={[cx + 2, wallH * 10, cz - 2]}
-              intensity={0.8} color="#f8fafc"
+              intensity={0.7} color="#f2f1ed"
               castShadow
               shadow-mapSize-width={2048} shadow-mapSize-height={2048}
               shadow-camera-left={-20} shadow-camera-right={20}
               shadow-camera-top={20} shadow-camera-bottom={-20}
             />
-            <directionalLight position={[cx - 3, wallH * 5, cz + 3]} intensity={0.3} color="#E0E8FF" />
+            <directionalLight position={[cx - 3, wallH * 5, cz + 3]} intensity={0.2} color="#9ba3ae" />
 
             {/* Subtle ground */}
             <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow position={[cx, -0.01, cz]}>
-              <planeGeometry args={[plan.totalWidth * S * 3, plan.totalHeight * S * 3]} />
-              <meshStandardMaterial color="#d8dee9" roughness={0.96} />
+              <planeGeometry args={[bounds.spanX * 3, bounds.spanZ * 3]} />
+              <meshStandardMaterial color="#15181D" roughness={0.96} />
             </mesh>
 
-            {/* Room blocks */}
-            {plan.rooms.map(room => (
+            {scene ? (
+              <SceneBuilding scene={scene} wallH={wallH * 0.5} />
+            ) : resolved.rooms.map(room => (
               <TopViewBlock key={room.id} room={room} blockH={wallH * 0.5} />
             ))}
 
             <OrbitControls
-              target={[cx, 0, cz]}
-              minDistance={0.5} maxDistance={25}
-              maxPolarAngle={Math.PI / 4}
-              minPolarAngle={0}
-              enableRotate={true}
+              key={viewMode}
+              target={cam.target}
+              enableRotate={false}
+              enablePan
             />
           </>
         )}

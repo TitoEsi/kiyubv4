@@ -2,12 +2,31 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('kiyub_theme');
+          var theme = (stored === 'light' || stored === 'dark')
+            ? stored
+            : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+          document.documentElement.setAttribute('data-theme', theme);
+          document.documentElement.style.colorScheme = theme;
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+          document.documentElement.style.colorScheme = 'dark';
+        }
+      })();
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet" />
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⬡</text></svg>" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+    <meta name="color-scheme" content="dark light" />
+    <link rel="icon" type="image/png" href="/kiyub-icon-dark.png" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" type="image/png" href="/kiyub-icon-light.png" media="(prefers-color-scheme: light)" />
+    <link rel="icon" type="image/png" href="/kiyub-icon-dark.png" id="kiyub-favicon" />
+    <link rel="apple-touch-icon" href="/kiyub-icon-dark.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Buildify — AI Floor Plan Designer</title>
+    <title>KIYUB v4 — Architectural Floor Plan Designer</title>
   </head>
   <body>
     <div id="root"></div>

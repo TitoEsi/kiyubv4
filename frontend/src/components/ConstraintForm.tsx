@@ -1,170 +1,61 @@
-import { useState, useMemo } from 'react'
-import { Constraints, ValidationIssue } from '../types/floorplan'
-
-// ── Client-side feasibility validation (mirrors backend rules) ────────────────
-function validateConstraints(c: Constraints): ValidationIssue[] {
-  const issues: ValidationIssue[] = []
-  const { sqft, bedrooms, bathrooms, primarySuite, homeOffice, formalDining, laundry, garage, stories } = c
-  const secondary = Math.max(0, bedrooms - 1)
-  const sharedBaths = Math.max(0, bathrooms - 1)
-
-  // Base overhead: living(168) + kitchen(120) + hallway(200) + foyer(40)
-  let minSqft = 528
-  minSqft += primarySuite ? 240 : 168  // primary bed cluster
-  minSqft += secondary * 100           // secondary beds
-  minSqft += sharedBaths * 40          // shared baths
-  if (homeOffice)    minSqft += 90
-  if (formalDining)  minSqft += 121
-  if (laundry === 'room') minSqft += 30
-
-  if (sqft < minSqft) {
-    const parts: string[] = []
-    if (secondary) parts.push(`${secondary} secondary bedroom${secondary !== 1 ? 's' : ''}`)
-    parts.push(`${bathrooms} bathroom${bathrooms !== 1 ? 's' : ''}`)
-    if (homeOffice) parts.push('home office')
-    if (formalDining) parts.push('formal dining')
-    issues.push({
-      field: 'sqft',
-      severity: 'error',
-      message: 'Not enough space for this configuration.',
-      detail: `Your selections (${parts.join(', ')}) need at least ${minSqft.toLocaleString()} sqft. You set ${sqft.toLocaleString()} sqft. Increase size or reduce rooms.`,
-    })
-  }
-
-  const baseOverhead = 528 + (primarySuite ? 240 : 168)
-  const maxSecondary = Math.max(0, Math.floor((sqft - baseOverhead) / 100))
-  if (secondary > maxSecondary && sqft >= minSqft) {
-    issues.push({
-      field: 'bedrooms',
-      severity: 'error',
-      message: `${bedrooms} bedrooms is not feasible in ${sqft.toLocaleString()} sqft.`,
-      detail: `After essential rooms, only ${sqft - baseOverhead} sqft remains for secondary bedrooms (${maxSecondary} max at 100 sqft each). Reduce to ${maxSecondary + 1} total or increase sqft.`,
-    })
-  }
-
-  if (bathrooms > bedrooms + 1) {
-    issues.push({
-      field: 'bathrooms',
-      severity: 'warning',
-      message: `${bathrooms} bathrooms for ${bedrooms} bedrooms is unusual.`,
-      detail: `Standard practice is 1 bathroom per bedroom. Consider ${Math.min(bathrooms, bedrooms)} bathrooms.`,
-    })
-  }
-
-  if (stories === 2 && sqft < 1200) {
-    issues.push({
-      field: 'stories',
-      severity: 'warning',
-      message: 'Two-story layout under 1,200 sqft is cramped.',
-      detail: 'Staircase overhead is significant in small homes. Consider single-story or 1,200+ sqft.',
-    })
-  }
-
-  if (garage === '3car' && sqft < 1800) {
-    issues.push({
-      field: 'garage',
-      severity: 'warning',
-      message: 'A 3-car garage is disproportionate for this home size.',
-      detail: `3-car garages suit 1,800+ sqft homes. With ${sqft.toLocaleString()} sqft, a 1 or 2-car garage fits better.`,
-    })
-  }
-
-  return issues
-}
+import { useMemo, useRef } from 'react'
+import {
+  Car,
+  CookingPot,
+  Couch,
+  Desktop,
+  Door,
+  Plant,
+  Sparkle,
+  Warning,
+  WashingMachine,
+  X,
+} from '@phosphor-icons/react'
+import { LotShape } from '../types/floorplan'
+import {
+  CeilingHeight,
+  GarageChoice,
+  LaundryChoice,
+  OutdoorChoice,
+  QuestionnaireData,
+} from '../types/questionnaire'
+import { validateQuestionnaire } from '../converters/validate-questionnaire'
+import { ARCHITECTURAL_STYLES } from '../data/architecturalStyles'
 
 interface Props {
-  onGenerate: (c: Constraints, useMOE?: boolean) => void
+  value: QuestionnaireData
+  onChange: (data: QuestionnaireData) => void
+  onGenerate: () => void
   loading: boolean
+  hideGenerate?: boolean
+  disabled?: boolean
+  generateLabel?: string
 }
 
-// ─── Room Catalog Definition ──────────────────────────────────────────────────
-
-interface RoomDef {
-  key: string
-  label: string
-  icon: string
-  constraintKey?: keyof Constraints
-  isToggle?: boolean
-  toggleOnValue?: string
-}
-
-interface RoomSection {
-  title: string
-  rooms: RoomDef[]
-}
-
-const CATALOG: RoomSection[] = [
-  {
-    title: 'Beds & Baths',
-    rooms: [
-      { key: 'primary_bed', label: 'Primary Bed', icon: '🛏', constraintKey: 'primarySuite', isToggle: true },
-      { key: 'bedrooms', label: 'Bedroom', icon: '🛏' },
-      { key: 'bathrooms', label: 'Bathroom', icon: '🚿' },
-      // Half bath toggled via formalDining for demo; expose as optional
-    ],
-  },
-  {
-    title: 'Living Spaces',
-    rooms: [
-      { key: 'kitchen', label: 'Kitchen', icon: '🍳' },
-      { key: 'dining', label: 'Dining', icon: '🍽' },
-      { key: 'living', label: 'Living Room', icon: '🛋' },
-      { key: 'office', label: 'Office', icon: '💻', constraintKey: 'homeOffice', isToggle: true },
-      { key: 'formalDining', label: 'Formal Dining', icon: '🥂', constraintKey: 'formalDining', isToggle: true },
-    ],
-  },
-  {
-    title: 'Outdoor Spaces',
-    rooms: [
-      { key: 'outdoor', label: 'Patio / Deck', icon: '🌿' },
-    ],
-  },
-  {
-    title: 'Garage & Utility',
-    rooms: [
-      { key: 'garage', label: 'Garage', icon: '🚗' },
-      { key: 'laundry', label: 'Laundry', icon: '🧺' },
-    ],
-  },
-]
-
-const DEFAULT: Constraints = {
-  bedrooms: 3,
-  bathrooms: 2,
-  sqft: 1800,
-  stories: 1,
-  style: 'modern',
-  openPlan: false,
-  primarySuite: true,
-  homeOffice: false,
-  formalDining: false,
-  garage: '2car',
-  laundry: 'room',
-  outdoor: 'patio',
-  ceilingHeight: 'standard',
-}
-
-function Stepper({ value, min, max, onChange }: { value: number; min: number; max: number; onChange: (v: number) => void }) {
+function Stepper({ value, min, max, onChange, disabled }: { value: number; min: number; max: number; onChange: (v: number) => void; disabled?: boolean }) {
   return (
     <div className="catalog-stepper">
       <button
+        type="button"
         className="catalog-stepper-btn"
         onClick={() => onChange(Math.max(min, value - 1))}
-        disabled={value <= min}
+        disabled={disabled || value <= min}
+        aria-label="Decrease"
       >−</button>
       <span className="catalog-stepper-val">{value}</span>
       <button
+        type="button"
         className="catalog-stepper-btn"
         onClick={() => onChange(Math.min(max, value + 1))}
-        disabled={value >= max}
+        disabled={disabled || value >= max}
+        aria-label="Increase"
       >+</button>
     </div>
   )
 }
 
-type GarageValue = 'none' | '1car' | '2car' | '3car'
-function GarageRow({ value, onChange }: { value: string; onChange: (v: GarageValue) => void }) {
-  const options: { v: GarageValue; label: string }[] = [
+function GarageRow({ value, onChange, disabled }: { value: string; onChange: (v: GarageChoice) => void; disabled?: boolean }) {
+  const options: { v: GarageChoice; label: string }[] = [
     { v: 'none', label: 'None' },
     { v: '1car', label: '1-Car' },
     { v: '2car', label: '2-Car' },
@@ -174,8 +65,11 @@ function GarageRow({ value, onChange }: { value: string; onChange: (v: GarageVal
     <div className="catalog-option-chips">
       {options.map(o => (
         <button
+          type="button"
           key={o.v}
           className={`catalog-chip ${value === o.v ? 'active' : ''}`}
+          aria-pressed={value === o.v}
+          disabled={disabled}
           onClick={() => onChange(o.v)}
         >{o.label}</button>
       ))}
@@ -183,9 +77,8 @@ function GarageRow({ value, onChange }: { value: string; onChange: (v: GarageVal
   )
 }
 
-type LaundryValue = 'none' | 'closet' | 'room'
-function LaundryRow({ value, onChange }: { value: string; onChange: (v: LaundryValue) => void }) {
-  const options: { v: LaundryValue; label: string }[] = [
+function LaundryRow({ value, onChange, disabled }: { value: string; onChange: (v: LaundryChoice) => void; disabled?: boolean }) {
+  const options: { v: LaundryChoice; label: string }[] = [
     { v: 'none', label: 'None' },
     { v: 'closet', label: 'Closet' },
     { v: 'room', label: 'Room' },
@@ -194,8 +87,11 @@ function LaundryRow({ value, onChange }: { value: string; onChange: (v: LaundryV
     <div className="catalog-option-chips">
       {options.map(o => (
         <button
+          type="button"
           key={o.v}
           className={`catalog-chip ${value === o.v ? 'active' : ''}`}
+          aria-pressed={value === o.v}
+          disabled={disabled}
           onClick={() => onChange(o.v)}
         >{o.label}</button>
       ))}
@@ -203,9 +99,8 @@ function LaundryRow({ value, onChange }: { value: string; onChange: (v: LaundryV
   )
 }
 
-type OutdoorValue = 'none' | 'patio' | 'deck' | 'both'
-function OutdoorRow({ value, onChange }: { value: string; onChange: (v: OutdoorValue) => void }) {
-  const options: { v: OutdoorValue; label: string }[] = [
+function OutdoorRow({ value, onChange, disabled }: { value: string; onChange: (v: OutdoorChoice) => void; disabled?: boolean }) {
+  const options: { v: OutdoorChoice; label: string }[] = [
     { v: 'none', label: 'None' },
     { v: 'patio', label: 'Patio' },
     { v: 'deck', label: 'Deck' },
@@ -215,8 +110,11 @@ function OutdoorRow({ value, onChange }: { value: string; onChange: (v: OutdoorV
     <div className="catalog-option-chips">
       {options.map(o => (
         <button
+          type="button"
           key={o.v}
           className={`catalog-chip ${value === o.v ? 'active' : ''}`}
+          aria-pressed={value === o.v}
+          disabled={disabled}
           onClick={() => onChange(o.v)}
         >{o.label}</button>
       ))}
@@ -224,200 +122,317 @@ function OutdoorRow({ value, onChange }: { value: string; onChange: (v: OutdoorV
   )
 }
 
-export default function ConstraintForm({ onGenerate, loading }: Props) {
-  const [c, setC] = useState<Constraints>(DEFAULT)
-  const set = <K extends keyof Constraints>(field: K, value: Constraints[K]) =>
-    setC(prev => ({ ...prev, [field]: value }))
+export default function ConstraintForm({ value, onChange, onGenerate, loading, hideGenerate, disabled, generateLabel }: Props) {
+  const q = value
+  const locked = !!disabled
+  const summaryRef = useRef<HTMLDivElement>(null)
 
-  const validationIssues = useMemo(() => validateConstraints(c), [c])
-  const hasErrors = validationIssues.some(i => i.severity === 'error')
+  const patchSite = (partial: Partial<QuestionnaireData['site']>) => {
+    if (locked) return
+    onChange({ ...q, site: { ...q.site, ...partial } })
+  }
+  const patchHouse = (partial: Partial<QuestionnaireData['house']>) => {
+    if (locked) return
+    onChange({ ...q, house: { ...q.house, ...partial } })
+  }
+  const patchSpaces = (partial: Partial<QuestionnaireData['spaces']>) => {
+    if (locked) return
+    onChange({ ...q, spaces: { ...q.spaces, ...partial } })
+  }
+  const patchPrefs = (partial: Partial<QuestionnaireData['preferences']>) => {
+    if (locked) return
+    onChange({ ...q, preferences: { ...q.preferences, ...partial } })
+  }
 
-  const sqftLabel = c.sqft >= 1000
-    ? `${(c.sqft / 1000).toFixed(1).replace('.0', '')}k`
-    : `${c.sqft}`
+  const validationIssues = useMemo(() => validateQuestionnaire(q), [q])
+  const errors = validationIssues.filter(i => i.severity === 'error')
+  const hasErrors = errors.length > 0
+
+  const sqftLabel = q.house.livingAreaSqft >= 1000
+    ? `${(q.house.livingAreaSqft / 1000).toFixed(1).replace('.0', '')}k`
+    : `${q.house.livingAreaSqft}`
 
   return (
     <div className="room-catalog">
 
-      {/* Header */}
       <div className="catalog-header">
-        <h3 className="catalog-heading">My Room List</h3>
-        <div className="catalog-size-target">
-          <span className="catalog-size-label">Total Size Target</span>
-          <div className="catalog-size-control">
+        <h3 className="catalog-heading">Project brief</h3>
+      </div>
+
+      {hasErrors && (
+        <div className="catalog-error-summary" role="alert" tabIndex={-1} ref={summaryRef} id="brief-errors">
+          <h2>There is a problem</h2>
+          <ul>
+            {errors.map((issue, i) => (
+              <li key={`${issue.field}-${i}`}>
+                <a href={`#field-${issue.field}`}>{issue.message}</a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Site */}
+      <div className="catalog-section">
+        <div className="catalog-section-title">Site</div>
+        <div className="catalog-row">
+          <span className="catalog-row-label">Lot Shape</span>
+          <div className="catalog-row-right">
+            <select
+              id="field-lotShape"
+              className="catalog-select"
+              disabled={locked}
+              value={q.site.lotShape}
+              onChange={e => {
+                const lotShape = e.target.value as LotShape
+                patchSite({
+                  lotShape,
+                  ...(lotShape === 'square' ? { lotDepth: q.site.lotWidth } : {}),
+                })
+              }}
+            >
+              <option value="rectangle">Rectangle</option>
+              <option value="square">Square</option>
+              <option value="l_shape">L-Shape</option>
+              <option value="irregular">Irregular</option>
+            </select>
+          </div>
+        </div>
+        <div className="catalog-row">
+          <span className="catalog-row-label">Lot Width</span>
+          <div className="catalog-row-right catalog-dimension-input">
             <input
+              id="field-lotWidth"
+              type="number"
+              min={1}
+              step={0.1}
+              disabled={locked}
+              value={q.site.lotWidth}
+              onChange={e => {
+                const lotWidth = Number(e.target.value)
+                if (!Number.isFinite(lotWidth)) return
+                patchSite({
+                  lotWidth,
+                  ...(q.site.lotShape === 'square' ? { lotDepth: lotWidth } : {}),
+                })
+              }}
+            />
+            <span>m</span>
+          </div>
+        </div>
+        <div className="catalog-row">
+          <span className="catalog-row-label">Lot Depth</span>
+          <div className="catalog-row-right catalog-dimension-input">
+            <input
+              id="field-lotDepth"
+              type="number"
+              min={1}
+              step={0.1}
+              value={q.site.lotDepth}
+              disabled={locked || q.site.lotShape === 'square'}
+              onChange={e => {
+                const lotDepth = Number(e.target.value)
+                if (!Number.isFinite(lotDepth)) return
+                patchSite({ lotDepth })
+              }}
+            />
+            <span>m</span>
+          </div>
+        </div>
+      </div>
+
+      {/* House */}
+      <div className="catalog-section">
+        <div className="catalog-section-title">House</div>
+        <div className="catalog-row">
+          <span className="catalog-row-label">Number of Floors</span>
+          <div className="catalog-row-right">
+            <select
+              id="field-floors"
+              className="catalog-select"
+              disabled={locked}
+              value={q.house.floors}
+              onChange={e => patchHouse({ floors: parseInt(e.target.value, 10) })}
+            >
+              <option value={1}>1</option>
+              <option value={2}>2</option>
+            </select>
+          </div>
+        </div>
+        <div className="catalog-row">
+          <span className="catalog-row-label" id="field-bedrooms">Bedrooms</span>
+          <div className="catalog-row-right">
+            <Stepper value={q.house.bedrooms} min={1} max={8} disabled={locked}
+              onChange={v => patchHouse({ bedrooms: v })} />
+          </div>
+        </div>
+        <div className="catalog-row">
+          <span className="catalog-row-label">Bathrooms</span>
+          <div className="catalog-row-right">
+            <Stepper value={q.house.bathrooms} min={1} max={6} disabled={locked}
+              onChange={v => patchHouse({ bathrooms: v })} />
+          </div>
+        </div>
+        <div className="catalog-row catalog-row-full">
+          <span className="catalog-row-label">Living area</span>
+          <div className="catalog-size-control" style={{ flex: 1 }}>
+            <input
+              id="field-livingAreaSqft"
               type="range" min={800} max={6000} step={100}
-              value={c.sqft}
-              onChange={e => set('sqft', parseInt(e.target.value))}
+              disabled={locked}
+              value={q.house.livingAreaSqft}
+              onChange={e => patchHouse({ livingAreaSqft: parseInt(e.target.value, 10) })}
               className="catalog-sqft-slider"
             />
             <span className="catalog-size-value">{sqftLabel} sqft</span>
           </div>
         </div>
-        <div className="catalog-meta-row">
-          <span className="catalog-meta-item">
-            <span className="catalog-meta-icon">⬜</span>
-            {c.stories === 1 ? '1 Story' : `${c.stories} Stories`}
-          </span>
-          <select
-            className="catalog-stories-select"
-            value={c.stories}
-            onChange={e => set('stories', parseInt(e.target.value))}
-          >
-            <option value={1}>1 Story</option>
-            <option value={2}>2 Stories</option>
-          </select>
+      </div>
+
+      {/* Spaces */}
+      <div className="catalog-section">
+        <div className="catalog-section-title">Spaces</div>
+        <div className="catalog-row">
+          <span className="catalog-row-icon" aria-hidden><CookingPot size={16} /></span>
+          <span className="catalog-row-label">Kitchen</span>
+          <span className="catalog-row-size">included</span>
+        </div>
+        <div className="catalog-row">
+          <span className="catalog-row-icon" aria-hidden><Couch size={16} /></span>
+          <span className="catalog-row-label">Living Room</span>
+          <span className="catalog-row-size">included</span>
+        </div>
+        <div className="catalog-row">
+          <span className="catalog-row-icon" aria-hidden><Door size={16} /></span>
+          <span className="catalog-row-label">Foyer</span>
+          <span className="catalog-row-size">included</span>
+        </div>
+        <div className="catalog-row">
+          <span className="catalog-row-icon" aria-hidden><Desktop size={16} /></span>
+          <span className="catalog-row-label">Home Office</span>
+          <div className="catalog-row-right">
+            <button
+              type="button"
+              className={`catalog-toggle ${q.spaces.homeOffice ? 'on' : ''}`}
+              aria-pressed={q.spaces.homeOffice}
+              disabled={locked}
+              onClick={() => patchSpaces({ homeOffice: !q.spaces.homeOffice })}
+            >
+              {q.spaces.homeOffice ? 'on' : '–'}
+            </button>
+          </div>
+        </div>
+        <div className="catalog-row catalog-row-full">
+          <span className="catalog-row-icon" aria-hidden><WashingMachine size={16} /></span>
+          <span className="catalog-row-label">Laundry</span>
+          <div className="catalog-row-right">
+            <LaundryRow value={q.spaces.laundry} disabled={locked} onChange={v => patchSpaces({ laundry: v })} />
+          </div>
+        </div>
+        <div className="catalog-row catalog-row-full">
+          <span className="catalog-row-icon" aria-hidden><Car size={16} /></span>
+          <span className="catalog-row-label">Garage</span>
+          <div className="catalog-row-right">
+            <GarageRow value={q.spaces.garage} disabled={locked} onChange={v => patchSpaces({ garage: v })} />
+          </div>
+        </div>
+        <div className="catalog-row catalog-row-full">
+          <span className="catalog-row-icon" aria-hidden><Plant size={16} /></span>
+          <span className="catalog-row-label">Outdoor Space</span>
+          <div className="catalog-row-right">
+            <OutdoorRow value={q.spaces.outdoor} disabled={locked} onChange={v => patchSpaces({ outdoor: v })} />
+          </div>
         </div>
       </div>
 
-      {/* Style */}
+      {/* Preferences */}
       <div className="catalog-section">
-        <div className="catalog-section-title">Style</div>
-        <div className="catalog-style-row">
-          {['modern', 'traditional', 'craftsman', 'ranch', 'farmhouse', 'contemporary'].map(s => (
+        <div className="catalog-section-title">Preferences</div>
+        <div className="catalog-row catalog-row-full">
+          <span className="catalog-row-label">Architectural Style</span>
+        </div>
+        <div className="catalog-style-grid">
+          {ARCHITECTURAL_STYLES.map(s => (
             <button
-              key={s}
-              className={`catalog-style-chip ${c.style === s ? 'active' : ''}`}
-              onClick={() => set('style', s)}
-            >{s.charAt(0).toUpperCase() + s.slice(1)}</button>
+              type="button"
+              key={s.id}
+              className={`catalog-style-card ${q.preferences.style === s.id ? 'active' : ''}`}
+              aria-pressed={q.preferences.style === s.id}
+              disabled={locked}
+              onClick={() => patchPrefs({ style: s.id })}
+            >
+              <span className="catalog-style-card-label">{s.label}</span>
+              <span className="catalog-style-card-hint">{s.hint}</span>
+            </button>
           ))}
         </div>
-      </div>
-
-      {/* ── Beds & Baths ── */}
-      <div className="catalog-section">
-        <div className="catalog-section-title">Beds &amp; Baths</div>
-
         <div className="catalog-row">
-          <span className="catalog-row-icon">🛏</span>
-          <span className="catalog-row-label">Primary Bed</span>
-          <div className="catalog-row-right">
-            <button
-              className={`catalog-toggle ${c.primarySuite ? 'on' : ''}`}
-              onClick={() => set('primarySuite', !c.primarySuite)}
-            >
-              {c.primarySuite ? 'L' : '–'}
-            </button>
-          </div>
-        </div>
-
-        <div className="catalog-row">
-          <span className="catalog-row-icon">🛏</span>
-          <span className="catalog-row-label">Bedroom</span>
-          <div className="catalog-row-right">
-            <Stepper value={c.bedrooms} min={1} max={8}
-              onChange={v => set('bedrooms', v)} />
-          </div>
-        </div>
-
-        <div className="catalog-row">
-          <span className="catalog-row-icon">🚿</span>
-          <span className="catalog-row-label">Bathroom</span>
-          <div className="catalog-row-right">
-            <Stepper value={c.bathrooms} min={1} max={6}
-              onChange={v => set('bathrooms', v)} />
-          </div>
-        </div>
-      </div>
-
-      {/* ── Living Spaces ── */}
-      <div className="catalog-section">
-        <div className="catalog-section-title">Living Spaces</div>
-
-        <div className="catalog-row">
-          <span className="catalog-row-icon">🍳</span>
-          <span className="catalog-row-label">Kitchen</span>
-          <span className="catalog-row-size">M</span>
-        </div>
-        <div className="catalog-row">
-          <span className="catalog-row-icon">🛋</span>
-          <span className="catalog-row-label">Living Room</span>
-          <span className="catalog-row-size">M</span>
-        </div>
-        <div className="catalog-row">
-          <span className="catalog-row-icon">🚪</span>
-          <span className="catalog-row-label">Foyer</span>
-          <span className="catalog-row-size">M</span>
-        </div>
-
-        <div className="catalog-row">
-          <span className="catalog-row-icon">🍽</span>
-          <span className="catalog-row-label">Dining</span>
-          <div className="catalog-row-right">
-            <button
-              className={`catalog-toggle ${c.formalDining ? 'on' : ''}`}
-              onClick={() => set('formalDining', !c.formalDining)}
-            >
-              {c.formalDining ? 'M' : '–'}
-            </button>
-          </div>
-        </div>
-
-        <div className="catalog-row">
-          <span className="catalog-row-icon">💻</span>
-          <span className="catalog-row-label">Office</span>
-          <div className="catalog-row-right">
-            <button
-              className={`catalog-toggle ${c.homeOffice ? 'on' : ''}`}
-              onClick={() => set('homeOffice', !c.homeOffice)}
-            >
-              {c.homeOffice ? 'M' : '–'}
-            </button>
-          </div>
-        </div>
-
-        <div className="catalog-row">
-          <span className="catalog-row-icon">🏠</span>
           <span className="catalog-row-label">Open Plan</span>
           <div className="catalog-row-right">
             <button
-              className={`catalog-toggle ${c.openPlan ? 'on' : ''}`}
-              onClick={() => set('openPlan', !c.openPlan)}
+              type="button"
+              className={`catalog-toggle ${q.preferences.openPlan ? 'on' : ''}`}
+              aria-pressed={q.preferences.openPlan}
+              disabled={locked}
+              onClick={() => patchPrefs({ openPlan: !q.preferences.openPlan })}
             >
-              {c.openPlan ? 'on' : '–'}
+              {q.preferences.openPlan ? 'on' : '–'}
             </button>
           </div>
         </div>
-      </div>
-
-      {/* ── Outdoor Spaces ── */}
-      <div className="catalog-section">
-        <div className="catalog-section-title">Outdoor Spaces</div>
-        <div className="catalog-row catalog-row-full">
-          <span className="catalog-row-icon">🌿</span>
-          <span className="catalog-row-label">Patio / Deck</span>
+        <div className="catalog-row">
+          <span className="catalog-row-label">Primary Suite</span>
           <div className="catalog-row-right">
-            <OutdoorRow value={c.outdoor} onChange={v => set('outdoor', v)} />
+            <button
+              type="button"
+              className={`catalog-toggle ${q.preferences.primarySuite ? 'on' : ''}`}
+              aria-pressed={q.preferences.primarySuite}
+              disabled={locked}
+              onClick={() => patchPrefs({ primarySuite: !q.preferences.primarySuite })}
+            >
+              {q.preferences.primarySuite ? 'on' : '–'}
+            </button>
+          </div>
+        </div>
+        <div className="catalog-row">
+          <span className="catalog-row-label">Formal Dining</span>
+          <div className="catalog-row-right">
+            <button
+              type="button"
+              className={`catalog-toggle ${q.preferences.formalDining ? 'on' : ''}`}
+              aria-pressed={q.preferences.formalDining}
+              disabled={locked}
+              onClick={() => patchPrefs({ formalDining: !q.preferences.formalDining })}
+            >
+              {q.preferences.formalDining ? 'on' : '–'}
+            </button>
+          </div>
+        </div>
+        <div className="catalog-row">
+          <span className="catalog-row-label">Ceiling Height</span>
+          <div className="catalog-row-right">
+            <select
+              className="catalog-select"
+              disabled={locked}
+              value={q.preferences.ceilingHeight}
+              onChange={e => patchPrefs({ ceilingHeight: e.target.value as CeilingHeight })}
+            >
+              <option value="standard">Standard</option>
+              <option value="high">High</option>
+              <option value="vaulted">Vaulted</option>
+            </select>
           </div>
         </div>
       </div>
 
-      {/* ── Garage & Utility ── */}
-      <div className="catalog-section">
-        <div className="catalog-section-title">Garage &amp; Utility</div>
-        <div className="catalog-row catalog-row-full">
-          <span className="catalog-row-icon">🚗</span>
-          <span className="catalog-row-label">Garage</span>
-          <div className="catalog-row-right">
-            <GarageRow value={c.garage} onChange={v => set('garage', v)} />
-          </div>
-        </div>
-        <div className="catalog-row catalog-row-full">
-          <span className="catalog-row-icon">🧺</span>
-          <span className="catalog-row-label">Laundry</span>
-          <div className="catalog-row-right">
-            <LaundryRow value={c.laundry} onChange={v => set('laundry', v)} />
-          </div>
-        </div>
-      </div>
-
-      {/* ── Validation Issues ── */}
       {validationIssues.length > 0 && (
         <div className="catalog-validation">
           {validationIssues.map((issue, i) => (
             <div key={i} className={`catalog-validation-issue catalog-validation-${issue.severity}`}>
               <div className="catalog-validation-header">
-                <span className="catalog-validation-icon">{issue.severity === 'error' ? '✕' : '⚠'}</span>
+                <span className="catalog-validation-icon" aria-hidden>
+                  {issue.severity === 'error' ? <X size={14} /> : <Warning size={14} />}
+                </span>
                 <strong>{issue.message}</strong>
               </div>
               <p className="catalog-validation-detail">{issue.detail}</p>
@@ -426,20 +441,21 @@ export default function ConstraintForm({ onGenerate, loading }: Props) {
         </div>
       )}
 
-      {/* ── Generate ── */}
+      {!hideGenerate && (
       <div className="catalog-generate">
         <button
           className="catalog-generate-btn"
-          onClick={() => onGenerate(c, true)}
-          disabled={loading || hasErrors}
+          onClick={onGenerate}
+          disabled={loading || hasErrors || disabled}
           title={hasErrors ? 'Fix errors above before generating' : ''}
         >
           {loading
             ? <><span className="catalog-spinner" /> Generating…</>
-            : <><span className="catalog-update-icon">✦</span> Update</>
+            : <><Sparkle size={16} weight="fill" aria-hidden /> {generateLabel || 'Generate Floor Plan'}</>
           }
         </button>
       </div>
+      )}
 
     </div>
   )

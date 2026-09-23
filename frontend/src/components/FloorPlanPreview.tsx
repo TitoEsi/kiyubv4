@@ -1,4 +1,4 @@
-import { FloorPlan } from '../types/floorplan'
+import { FloorPlan, roomCentroid, roomParts } from '../types/floorplan'
 
 interface Props {
   plan: FloorPlan
@@ -82,7 +82,7 @@ export default function FloorPlanPreview({ plan, width = 300, height = 210 }: Pr
   const WALL = Math.max(0.6, scale * 0.15)
 
   return (
-    <svg width={width} height={height} style={{ display: 'block', background: '#e8eef5' }}>
+    <svg width={width} height={height} style={{ display: 'block', background: '#faf9f5' }}>
       {/* Outer footprint shadow */}
       <rect
         x={ox + 2} y={oy + 2}
@@ -98,14 +98,13 @@ export default function FloorPlanPreview({ plan, width = 300, height = 210 }: Pr
         fill="#dce4ee" stroke="#94a3b8" strokeWidth={1.2} rx={1}
       />
 
-      {/* Rooms */}
+      {/* Rooms — footprint parts; never fill the L void */}
       {plan.rooms.map(room => {
-        const rx = ox + room.x * scale
-        const ry = oy + room.y * scale
+        const parts = roomParts(room)
+        const color = getRoomColor(room)
+        const c = roomCentroid(room)
         const rw = room.width * scale
         const rh = room.height * scale
-        const color = getRoomColor(room)
-
         const showLabel = rw > 32 && rh > 16
         const shortName = room.name.length > 12
           ? room.name.split(' ').map(w => w[0]).join('').toUpperCase()
@@ -113,15 +112,21 @@ export default function FloorPlanPreview({ plan, width = 300, height = 210 }: Pr
 
         return (
           <g key={room.id}>
-            <rect
-              x={rx} y={ry} width={rw} height={rh}
-              fill={color}
-              stroke="#B0ACA4"
-              strokeWidth={WALL}
-            />
+            {parts.map((p, i) => (
+              <rect
+                key={i}
+                x={ox + p.x * scale}
+                y={oy + p.y * scale}
+                width={p.width * scale}
+                height={p.height * scale}
+                fill={color}
+                stroke="#B0ACA4"
+                strokeWidth={WALL}
+              />
+            ))}
             {showLabel && (
               <text
-                x={rx + rw / 2} y={ry + rh / 2}
+                x={ox + c.x * scale} y={oy + c.y * scale}
                 textAnchor="middle" dominantBaseline="middle"
                 fontSize={Math.max(6, Math.min(9, rw / (shortName.length * 0.7)))}
                 fill="#4A4540"

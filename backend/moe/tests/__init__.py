@@ -102,6 +102,16 @@ class TestData:
         assert "master_bedroom" in types
         assert "kitchen" in types
         assert "living_room" in types
+        assert "garage" in types
+        assert "laundry_room" in types
+        assert "mudroom" not in types
+        three = _build_room_list(
+            bedrooms=3, bathrooms=2, sqft=2200, style="modern",
+            open_plan=False, primary_suite=True, home_office=False,
+            formal_dining=False, garage="3car", laundry="room", outdoor="patio",
+        )
+        assert [r["type"] for r in three].count("mudroom") == 0
+        assert [r["type"] for r in three].count("garage") == 1
 
     def test_solve_layout_no_overlap(self):
         rooms = _build_room_list(

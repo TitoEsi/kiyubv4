@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
+import { ArrowUp } from '@phosphor-icons/react'
+import KiyubLogo from './KiyubLogo'
 import { FloorPlan } from '../types/floorplan'
 import { sendChatMessage, ChatMsg } from '../api/client'
 
@@ -56,7 +58,9 @@ export default function ChatPanel({ plan, onPlanUpdate }: Props) {
       <div className="chat-messages">
         {msgs.length === 0 && (
           <div className="chat-welcome">
-            <div className="chat-welcome-icon">🏠</div>
+            <div className="chat-welcome-icon" aria-hidden>
+              <KiyubLogo variant="mark" decorative className="kiyub-logo-chat" />
+            </div>
             <p>Ask me anything about your floor plan. I can suggest improvements, explain trade-offs, or modify room sizes.</p>
             <div className="chat-starters">
               {STARTERS.map(s => (
@@ -88,7 +92,9 @@ export default function ChatPanel({ plan, onPlanUpdate }: Props) {
       </div>
 
       <div className="chat-input-row">
+        <label htmlFor="chat-input" className="sr-only">Message</label>
         <input
+          id="chat-input"
           className="chat-input"
           value={input}
           onChange={e => setInput(e.target.value)}
@@ -96,8 +102,8 @@ export default function ChatPanel({ plan, onPlanUpdate }: Props) {
           placeholder="Ask about your design… (Enter to send)"
           disabled={loading}
         />
-        <button className="chat-send-btn" onClick={() => send()} disabled={loading || !input.trim()}>
-          ↑
+        <button type="button" className="chat-send-btn" aria-label="Send message" onClick={() => send()} disabled={loading || !input.trim()}>
+          <ArrowUp size={16} />
         </button>
       </div>
     </div>

@@ -26,7 +26,7 @@ from .config import MOEConfig
 from .model import BuildifyMOE
 from .data import (
     encode_constraints, IRC_ROOM_SPECS, ZONE_MAP,
-    STYLE_TEMPLATES, ADJACENCY_RULES, _build_room_list,
+    STYLE_TEMPLATES, ADJACENCY_RULES, _build_room_list, encoder_style_name,
 )
 from .experts import EXPERT_NAMES
 
@@ -36,6 +36,33 @@ try:
     _HOUSEGAN_AVAILABLE = True
 except ImportError:
     _HOUSEGAN_AVAILABLE = False
+
+from solver.envelope import (
+    LotConstraintError,
+    METERS_TO_FEET,
+    SETBACK_FRONT_FT,
+    SETBACK_REAR_FT,
+    SETBACK_SIDE_FT,
+    UNSUPPORTED_LOT_SHAPES,
+    compute_buildable_envelope,
+)
+
+
+def _plan_fits_envelope(placed: List[dict], total_w: float, total_h: float,
+                        max_w: float, max_h: float) -> bool:
+    """True if the footprint and every room stay inside the buildable envelope."""
+    if total_w <= 0 or total_h <= 0:
+        return False
+    if total_w > max_w + 1e-6 or total_h > max_h + 1e-6:
+        return False
+    for r in placed:
+        x, y, w, h = r["x"], r["y"], r["width"], r["height"]
+        if x < 0 or y < 0 or w <= 0 or h <= 0:
+            return False
+        if x + w > total_w + 1e-6 or y + h > total_h + 1e-6:
+            return False
+    return True
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Color palette for room types
@@ -601,8 +628,9 @@ def predict_floor_plan(constraints: dict, num_variants: int = 3,
     config = config or MOEConfig()
     model = load_model(config)
 
-    # Parse constraint keys
-    style = constraints.get("style", "modern")
+    # Parse constraint keys. Encoder STYLES length/order is frozen.
+    ui_style = constraints.get("style", "modern")
+    style = encoder_style_name(ui_style)
     if style not in config.STYLES:
         style = "modern"
 
@@ -622,7 +650,7 @@ def predict_floor_plan(constraints: dict, num_variants: int = 3,
     # Encode constraints for MOE
     constraint_vec = encode_constraints(
         bedrooms=bedrooms, bathrooms=bathrooms, sqft=sqft, stories=stories,
-        style=style, open_plan=open_plan, primary_suite=primary_suite,
+        style=ui_style, open_plan=open_plan, primary_suite=primary_suite,
         home_office=home_office, formal_dining=formal_dining,
         garage=garage, laundry=laundry, outdoor=outdoor,
         ceiling_height=ceiling_height, config=config,
@@ -639,9 +667,13 @@ def predict_floor_plan(constraints: dict, num_variants: int = 3,
     ceil_map = {"standard": 9, "high": 10, "vaulted": 12}
     ceiling_ft = ceil_map.get(ceiling_height, 9)
 
+    envelope = compute_buildable_envelope(constraints)
+    max_w = envelope["max_w"]
+    max_h = envelope["max_h"]
+
     # Stage 1: Build correct room list from constraints (deterministic)
     base_rooms = _build_room_list(
-        bedrooms, bathrooms, sqft, style,
+        bedrooms, bathrooms, sqft, ui_style,
         open_plan, primary_suite, home_office, formal_dining,
         garage, laundry, outdoor,
     )
@@ -765,39 +797,52 @@ def predict_floor_plan(constraints: dict, num_variants: int = 3,
                     specs = IRC_ROOM_SPECS.get(r["type"], (4, 4))
                     r["width"] = max(specs[0], round(r["width"] * sw / 2) * 2)
 
-        # ── Footprint width: target realistic US house proportions ─────────
-        # Real single-story houses: 50-70ft wide, 30-55ft deep.
-        # Base target width on sqft: ~sqrt(sqft * 1.8) gives sensible proportions.
-        # Then verify entry band fits and clamp to [48, 75].
+        # ── Footprint: sqft-based target, hard-capped to the lot envelope ──
+        # Real single-story houses: 50-70ft wide, 30-55ft deep, but the lot
+        # boundary always wins. Do not keep an unconditional min width/depth
+        # (e.g. max(64, ...)) that would exceed the user's lot.
         entry_rooms_w = sum(
             r["width"] for r in sized_rooms
             if ZONE_MAP.get(r["type"], 1) == 0
         )
-        # Target: wide enough that rooms pack into SINGLE rows per zone.
-        # Social zone has ~4 rooms (14-16ft each) = ~60-66ft needed.
-        # Private zone has ~5 rooms averaging ~12ft = ~60ft needed.
-        # Target 68-76ft to guarantee single-row packing in most cases.
         sqft_based_w = math.sqrt(sqft * 2.5)  # 1800→67ft, 2400→77ft, 3000→86ft
-        total_w = max(64, min(80, round(max(entry_rooms_w, sqft_based_w) / 2) * 2))
-        # Height estimate only used for initial clamping — actual_h recomputed after placement
-        total_h = max(28, min(60, round(sqft / max(total_w, 1) * 0.9)))
+        desired_w = round(max(entry_rooms_w, sqft_based_w) / 2) * 2
+        desired_w = min(desired_w, 80)
+        total_w = max(2, min(desired_w, int(max_w)))
+        desired_h = round(sqft / max(total_w, 1) * 0.9)
+        desired_h = min(max(desired_h, 2), 60)
+        total_h = max(2, min(desired_h, int(max_h)))
 
         # Stage 3: Spatial placement — HouseGAN++ first, zone-based fallback
         hg_placed = _place_rooms_housegan(
             sized_rooms, constraints, total_w, total_h,
             num_variants=num_variants, variant_idx=v,
         )
-        used_housegan = hg_placed is not None
-        placed = hg_placed if used_housegan else _place_rooms_architectural(
-            sized_rooms, total_w, total_h, style, variant_seed=v
-        )
+        used_housegan = False
+        if hg_placed:
+            hg_w = max(r["x"] + r["width"] for r in hg_placed)
+            hg_h = max(r["y"] + r["height"] for r in hg_placed)
+            if hg_w <= max_w + 1e-6 and hg_h <= max_h + 1e-6:
+                placed = hg_placed
+                used_housegan = True
+            else:
+                placed = _place_rooms_architectural(
+                    sized_rooms, total_w, total_h, style, variant_seed=v
+                )
+        else:
+            placed = _place_rooms_architectural(
+                sized_rooms, total_w, total_h, style, variant_seed=v
+            )
 
-        # Calculate actual footprint from placed rooms (BEFORE validation)
+        # Calculate actual footprint from placed rooms (BEFORE validation).
+        # Never grow past the lot envelope — extra depth is an overflow, not a success.
         if placed:
-            actual_h = max(total_h, max(r["y"] + r["height"] for r in placed))
+            actual_h = max(r["y"] + r["height"] for r in placed)
             actual_h = round(actual_h / 2) * 2  # snap to grid
+            actual_h = max(actual_h, total_h)
         else:
             actual_h = total_h
+        actual_h = min(actual_h, int(max_h))
 
         # Stage 4: IRC validation (use actual height, not target)
         placed = _validate_irc(placed, total_w, actual_h)
@@ -821,14 +866,43 @@ def predict_floor_plan(constraints: dict, num_variants: int = 3,
                 r["height"] = new_h
             # Recompute actual_h with new heights before re-snapping
             if placed:
-                actual_h = max(total_h, max(r["y"] + r["height"] for r in placed))
+                actual_h = max(r["y"] + r["height"] for r in placed)
                 actual_h = round(actual_h / 2) * 2
+                actual_h = max(actual_h, total_h)
+            actual_h = min(actual_h, int(max_h))
             placed = _snap_and_fill(placed, total_w, actual_h)
 
-        # Recompute actual height after snapping
+        # Recompute actual height after snapping; still must not exceed the lot
         if placed:
-            actual_h = max(total_h, max(r["y"] + r["height"] for r in placed))
+            actual_h = max(r["y"] + r["height"] for r in placed)
             actual_h = round(actual_h / 2) * 2
+            actual_h = max(actual_h, total_h)
+        actual_h = min(actual_h, int(max_h))
+
+        if not _plan_fits_envelope(placed, total_w, actual_h, max_w, max_h):
+            if used_housegan:
+                print("[HouseGAN] candidate exceeded envelope after snap; using zone fallback")
+                used_housegan = False
+                placed = _place_rooms_architectural(
+                    sized_rooms, total_w, total_h, style, variant_seed=v
+                )
+                if placed:
+                    actual_h = max(r["y"] + r["height"] for r in placed)
+                    actual_h = round(actual_h / 2) * 2
+                    actual_h = max(actual_h, total_h)
+                actual_h = min(actual_h, int(max_h))
+                placed = _validate_irc(placed, total_w, actual_h)
+                placed = _snap_and_fill(placed, total_w, actual_h)
+                placed = _fill_vertical_gaps(placed, actual_h)
+                if placed:
+                    actual_h = max(r["y"] + r["height"] for r in placed)
+                    actual_h = round(actual_h / 2) * 2
+                    actual_h = max(actual_h, total_h)
+                actual_h = min(actual_h, int(max_h))
+                if not _plan_fits_envelope(placed, total_w, actual_h, max_w, max_h):
+                    continue
+            else:
+                continue
 
         # Stage 6: Door detection
         doors = _add_doors(placed)
@@ -845,6 +919,17 @@ def predict_floor_plan(constraints: dict, num_variants: int = 3,
             "variant": v,
         }
         plans.append(plan)
+
+    if not plans:
+        raise LotConstraintError(
+            "Requested rooms cannot fit on this lot.",
+            (
+                f"After placeholder setbacks the buildable envelope is "
+                f"{max_w:.0f} ft × {max_h:.0f} ft. Reduce rooms or increase lot size. "
+                "These setbacks are conceptual only, not Philippine building-code values."
+            ),
+            "lotWidth",
+        )
 
     # Confidence scoring
     confidence = _calculate_confidence(expert_weights, plans, sqft)

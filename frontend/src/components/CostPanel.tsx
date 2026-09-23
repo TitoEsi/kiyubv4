@@ -53,7 +53,7 @@ export default function CostPanel({ plan }: Props) {
             {(['low','mid','high'] as const).map(tier => (
               <div key={tier} className={`cost-card cost-card-${tier}`}>
                 <div className="cost-card-label">
-                  {tier === 'low' ? '🏠 Economy' : tier === 'mid' ? '⭐ Mid-Range' : '✨ Premium'}
+                  {tier === 'low' ? 'Economy' : tier === 'mid' ? 'Mid-Range' : 'Premium'}
                 </div>
                 <div className="cost-card-total">{fmt(result.total[tier])}</div>
                 <div className="cost-card-psf">{fmt(result.per_sqft[tier])} /sq ft</div>

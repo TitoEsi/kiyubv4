@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import time
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -10,22 +11,29 @@ from pydantic import BaseModel
 from typing import Literal, Optional
 
 from generator import generate_floor_plan
-from exporter import export_to_dxf
+from exporter import export_to_dxf, export_to_pdf
 from cost import estimate_cost, REGION_MULTIPLIERS
 from scoring import score_design
-from moe.inference import predict_floor_plan, load_model
+from moe.inference import predict_floor_plan, load_model, LotConstraintError, compute_buildable_envelope
+from solver.pipeline import refine_generation
+from solver.room_program import envelope_from_constraints
 from moe.api_auth import key_store, get_api_key
 from moe.config import MOEConfig
 from moe.experts import EXPERT_NAMES
+from moe.housegan.inference import get_housegan_status
+from workflow.api import router as workflow_router
+from workflow.db import SessionLocal, init_db
+from workflow.seed import seed_users
 
-app = FastAPI(title="Buildify API")
+app = FastAPI(title="KIYUB v4 API")
+app.include_router(workflow_router)
 
 
 @app.on_event("startup")
 async def startup_event():
     from rag import rag
     try:
-        await rag.initialize()
+        rag.load()
     except Exception as e:
         print(f"[RAG] Init warning: {e} — generation will work without RAG context.")
     # Pre-load MOE model
@@ -33,6 +41,15 @@ async def startup_event():
         load_model()
     except Exception as e:
         print(f"[MOE] Init warning: {e} — MOE generation may be unavailable.")
+    try:
+        init_db()
+        db = SessionLocal()
+        try:
+            seed_users(db)
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"[WORKFLOW] Init warning: {e} — project workflow may be unavailable.")
 
 
 import os
@@ -54,18 +71,30 @@ app.add_middleware(
 # ── Request models ────────────────────────────────────────────────────────────
 
 class Constraints(BaseModel):
+    # Site
+    lotShape: Literal["rectangle", "square", "l_shape", "irregular"] = "rectangle"
+    lotWidth: float = 20.0
+    lotDepth: float = 30.0
+
+    # Basics
     bedrooms: int = 3
     bathrooms: int = 2
     sqft: int = 1800
     stories: int = 1
     style: str = "modern"
+
+    # Layout options
     openPlan: bool = False
     primarySuite: bool = True
     homeOffice: bool = False
     formalDining: bool = False
+
+    # Spaces
     garage: str = "2car"
     laundry: str = "room"
     outdoor: str = "patio"
+
+    # Style
     ceilingHeight: str = "standard"
 
 
@@ -95,6 +124,8 @@ class ChatRequest(BaseModel):
 class AuthRequest(BaseModel):
     email: str = ""
     tier: str = "free"
+    password: Optional[str] = None
+    role: str = "CLIENT"
 
 
 class UpgradeRequest(BaseModel):
@@ -160,6 +191,67 @@ def validate_constraints_feasibility(c: dict) -> list:
     if home_office:    min_sqft += 90
     if formal_dining:  min_sqft += 121
     if laundry == "room": min_sqft += 30
+
+    # ── ERROR: lot shape / dimensions ─────────────────────────────────────
+    lot_shape = c.get("lotShape", "rectangle")
+    try:
+        lot_width = float(c.get("lotWidth", 20.0))
+    except (TypeError, ValueError):
+        lot_width = 0.0
+    try:
+        lot_depth = float(c.get("lotDepth", 30.0))
+    except (TypeError, ValueError):
+        lot_depth = 0.0
+
+    if lot_shape in ("l_shape", "irregular"):
+        label = "L-shaped" if lot_shape == "l_shape" else "irregular"
+        issues.append({
+            "field": "lotShape",
+            "severity": "error",
+            "message": f"{label.capitalize()} lots are not yet supported.",
+            "detail": (
+                "True L-shaped and irregular lot geometry is not implemented. "
+                "Choose rectangle or square for this phase."
+            ),
+        })
+
+    if lot_width <= 0:
+        issues.append({
+            "field": "lotWidth",
+            "severity": "error",
+            "message": "Lot width must be greater than zero.",
+            "detail": "Enter a lot width greater than 0 meters.",
+        })
+    if lot_depth <= 0:
+        issues.append({
+            "field": "lotDepth",
+            "severity": "error",
+            "message": "Lot depth must be greater than zero.",
+            "detail": "Enter a lot depth greater than 0 meters.",
+        })
+
+    if lot_shape not in ("l_shape", "irregular") and lot_width > 0 and lot_depth > 0:
+        try:
+            env = compute_buildable_envelope(c)
+            buildable_area = env["buildable_width"] * env["buildable_depth"] * max(1, stories)
+            needed = max(sqft, min_sqft)
+            if needed > buildable_area:
+                issues.append({
+                    "field": "lotWidth",
+                    "severity": "error",
+                    "message": "This lot is too small for the requested home.",
+                    "detail": (
+                        f"After placeholder setbacks the buildable envelope is "
+                        f"{env['buildable_width']:.1f} ft × {env['buildable_depth']:.1f} ft "
+                        f"({buildable_area:,.0f} sqft across {stories} "
+                        f"{'story' if stories == 1 else 'stories'}). "
+                        f"The requested configuration needs about {needed:,} sqft. "
+                        f"Increase the lot, reduce size, or remove rooms. "
+                        "These setbacks are conceptual only, not Philippine building-code values."
+                    ),
+                })
+        except LotConstraintError as e:
+            issues.append(e.as_issue())
 
     # ── ERROR: total sqft below minimum ───────────────────────────────────
     if sqft < min_sqft:
@@ -228,6 +320,85 @@ def validate_constraints_feasibility(c: dict) -> list:
     return issues
 
 
+def _generation_debug(constraints: dict, moe: dict, result: dict, timings: dict | None = None) -> dict:
+    """Lightweight pipeline trace. Does not change geometry. Not professional approval."""
+    hg = get_housegan_status()
+    moe_plans = moe.get("plans") or []
+    envelope = None
+    try:
+        envelope = compute_buildable_envelope(constraints)
+    except Exception as exc:
+        envelope = {"error": str(exc)}
+    plan0 = (result.get("plans") or [{}])[0]
+    q = result.get("quality_score") or {}
+    cats = q.get("categories") or {}
+    debug = {
+        "input": {
+            "lotShape": constraints.get("lotShape"),
+            "lotWidth_m": constraints.get("lotWidth"),
+            "lotDepth_m": constraints.get("lotDepth"),
+            "stories": constraints.get("stories"),
+            "bedrooms": constraints.get("bedrooms"),
+            "bathrooms": constraints.get("bathrooms"),
+        },
+        "site": {
+            "width": constraints.get("lotWidth"),
+            "depth": constraints.get("lotDepth"),
+        },
+        "housegan": {
+            "available": hg.available,
+            "source": hg.source,
+            "reason": hg.reason,
+            "status": "active" if hg.available else "unavailable",
+            "plan_count": sum(
+                1 for p in moe_plans
+                if p.get("generator") == "moe+housegan" or p.get("used_housegan")
+            ),
+            "moe_plan_count": len(moe_plans),
+        },
+        "buildify_moe": {
+            "generators": [p.get("generator") for p in moe_plans],
+            "plan_count": len(moe_plans),
+            "adjacency": "bubble_diagram_weighted",
+        },
+        "ortools": {
+            "status": result.get("status"),
+            "selected_strategy": result.get("selected_strategy"),
+            "selected_source": result.get("selected_source"),
+            "strategy_count": len(result.get("strategy_evaluations") or []),
+            "plan_generator": plan0.get("generator"),
+            "envelope_ft": {
+                "totalWidth": plan0.get("totalWidth"),
+                "totalHeight": plan0.get("totalHeight"),
+            },
+        },
+        "candidates": result.get("strategy_evaluations") or [],
+        "winner": result.get("winner") or result.get("selected_strategy"),
+        "evaluation": {
+            "overall": q.get("overall"),
+            "categories": cats,
+            "diagnostics": result.get("diagnostics") or q.get("diagnostics"),
+            "circulation_ratio": result.get("circulation_ratio") or q.get("circulation_ratio"),
+            "objective_breakdown": q.get("objective_breakdown"),
+        },
+        "program": result.get("program"),
+        "program_validation": result.get("program_validation"),
+        "topology_count": result.get("topology_count"),
+        "ruleset": result.get("ruleset"),
+        "refinement": result.get("refinement") or [],
+        "timings": {**(timings or {}), **(result.get("timings") or {})},
+        "buildable_envelope": envelope,
+        "scene_site_m": {
+            "width": constraints.get("lotWidth"),
+            "depth": constraints.get("lotDepth"),
+        },
+        "note": "Internal generation debug. Not professional architectural approval or code compliance.",
+    }
+    print("[KIYUB v4 DEBUG]")
+    print(json.dumps(debug, indent=2, default=str))
+    return debug
+
+
 # ── MOE Endpoints ─────────────────────────────────────────────────────────────
 
 @app.post("/api/generate/moe")
@@ -251,6 +422,8 @@ async def generate_moe(constraints: Constraints, request: Request):
                 key_store.record_usage(api_key, "generation")
 
         c = constraints.model_dump()
+        print("[KIYUB POST] /api/generate/moe")
+        print(json.dumps(c, indent=2, default=str))
 
         # Feasibility check — block generation for impossible configurations
         issues = validate_constraints_feasibility(c)
@@ -261,10 +434,51 @@ async def generate_moe(constraints: Constraints, request: Request):
                 detail={"validation_errors": issues},
             )
 
-        result = predict_floor_plan(c, num_variants=num_variants)
+        from rag import rag
+        rag_meta = await rag.retrieve_for_generate(c)
+
+        try:
+            t_moe = time.perf_counter()
+            moe = predict_floor_plan(c, num_variants=num_variants)
+            moe_s = round(time.perf_counter() - t_moe, 3)
+        except LotConstraintError as e:
+            try:
+                envelope_from_constraints(c)
+            except LotConstraintError:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"validation_errors": [e.as_issue()]},
+                )
+            moe = {
+                "plans": [],
+                "expert_weights": {},
+                "confidence": 0,
+                "irc_compliant": False,
+            }
+            moe_s = 0.0
+
+        t_ref = time.perf_counter()
+        result = refine_generation(c, moe)
+        refine_s = round(time.perf_counter() - t_ref, 3)
+        timings = {
+            "buildify_moe_s": moe_s,
+            "housegan_s": None,
+            "refine_generation_s": refine_s,
+            "total_s": round(moe_s + refine_s, 3),
+        }
+        result["applied_constraints"] = c
+        result["rag_available"] = rag_meta["rag_available"]
+        result["rag_reason"] = rag_meta["rag_reason"]
+        result["rag_context"] = rag_meta["rag_context"]
+        result["generation_debug"] = _generation_debug(c, moe, result, timings)
         return result
     except HTTPException:
         raise
+    except LotConstraintError as e:
+        raise HTTPException(
+            status_code=422,
+            detail={"validation_errors": [e.as_issue()]},
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -288,7 +502,34 @@ async def moe_experts(constraints: Constraints):
 
 @app.post("/api/auth/register")
 async def auth_register(req: AuthRequest):
-    """Register a new API key."""
+    """Register an API key, or a workflow user when password is provided."""
+    if req.password:
+        from workflow.auth import create_token, hash_password
+        from workflow.db import SessionLocal
+        from workflow.models import User
+        from workflow.audit import log_event
+        from workflow.state import ROLES
+        from workflow.services import serialize_user
+        role = (req.role or "CLIENT").upper()
+        if role not in ROLES or role in ("MAIN_ADMIN", "IT_PERSONNEL"):
+            raise HTTPException(status_code=403, detail="Cannot self-register this role")
+        db = SessionLocal()
+        try:
+            email = req.email.lower().strip()
+            if db.query(User).filter(User.email == email).one_or_none():
+                raise HTTPException(status_code=409, detail="Email already registered")
+            approved = role == "CLIENT"
+            user = User(email=email, password_hash=hash_password(req.password), role=role, approved=approved)
+            db.add(user)
+            db.flush()
+            log_event(db, event_type="ACCOUNT_MODIFIED", actor_id=user.id, target=user.id, metadata={"created": True})
+            db.commit()
+            db.refresh(user)
+            if role == "ARCHITECT":
+                return {"user": serialize_user(user), "message": "Architect account created. Wait for IT approval before logging in."}
+            return {"token": create_token(user), "user": serialize_user(user)}
+        finally:
+            db.close()
     try:
         record = key_store.create_key(tier=req.tier, email=req.email)
         return {
@@ -335,6 +576,20 @@ async def export_dxf(request: ExportRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/export/pdf")
+async def export_pdf(request: ExportRequest):
+    try:
+        pdf_bytes = export_to_pdf(request.floor_plan)
+        name = str(request.floor_plan.get("name", "floor_plan")).replace(" ", "_")
+        return StreamingResponse(
+            io.BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{name}.pdf"'},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/cost/regions")
 async def cost_regions():
     return {"regions": list(REGION_MULTIPLIERS.keys())}
@@ -356,9 +611,11 @@ async def score(request: ScoreRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-CHAT_SYSTEM = """You are Buildify AI, an expert residential architect assistant.
-You help users refine their floor plans. The user will share their current floor plan data
+CHAT_SYSTEM = """You are KIYUB v4, an AI-assisted residential floor-plan design assistant.
+You help users refine conceptual floor plans. The user will share their current floor plan data
 and ask questions or request modifications.
+This is a conceptual design tool. Do not claim building-code compliance or licensed architectural approval.
+
 
 When asked to modify a plan, respond with:
 1. A brief explanation of your suggested changes (2-3 sentences)

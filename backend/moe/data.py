@@ -95,7 +95,35 @@ STYLE_TEMPLATES = {
     "contemporary": {"open_plan_weight": 0.8, "formal_rooms": False, "outdoor_emphasis": 0.6},
     "colonial":     {"open_plan_weight": 0.3, "formal_rooms": True,  "outdoor_emphasis": 0.3},
     "cape_cod":     {"open_plan_weight": 0.4, "formal_rooms": True,  "outdoor_emphasis": 0.5},
+    # UI-only keys. Encoder STYLES length/order is frozen; map via STYLE_ENCODER_MAP.
+    "japandi":                 {"open_plan_weight": 0.85, "formal_rooms": False, "outdoor_emphasis": 0.55},
+    "minimalist":              {"open_plan_weight": 0.9,  "formal_rooms": False, "outdoor_emphasis": 0.4},
+    "brutalist":               {"open_plan_weight": 0.65, "formal_rooms": False, "outdoor_emphasis": 0.25},
+    "modern_tropical":         {"open_plan_weight": 0.85, "formal_rooms": False, "outdoor_emphasis": 0.95},
+    "filipino_contemporary":   {"open_plan_weight": 0.75, "formal_rooms": False, "outdoor_emphasis": 0.9},
+    "tropical_minimalist":     {"open_plan_weight": 0.9,  "formal_rooms": False, "outdoor_emphasis": 0.85},
 }
+
+# New UI styles map onto the 8-wide encoder one-hot. Do not change STYLES length/order.
+STYLE_ENCODER_MAP = {
+    "japandi": "modern",
+    "minimalist": "modern",
+    "modern_tropical": "modern",
+    "tropical_minimalist": "modern",
+    "filipino_contemporary": "contemporary",
+    "brutalist": "contemporary",
+}
+
+_ENCODER_STYLES = (
+    "modern", "traditional", "craftsman", "ranch",
+    "farmhouse", "contemporary", "colonial", "cape_cod",
+)
+
+
+def encoder_style_name(style: str) -> str:
+    mapped = STYLE_ENCODER_MAP.get(style, style)
+    return mapped if mapped in _ENCODER_STYLES else "modern"
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -196,10 +224,8 @@ def _build_room_list(bedrooms: int, bathrooms: int, sqft: int,
         _add("garage", "2-Car Garage")
     elif garage == "3car":
         _add("garage", "3-Car Garage", scale=1.3)
-        _add("mudroom", "Mudroom")
 
     if garage != "none":
-        _add("mudroom", "Mudroom")
         _add("pantry", "Pantry")
 
     # Outdoor
@@ -305,8 +331,9 @@ def encode_constraints(bedrooms: int, bathrooms: int, sqft: int,
     features.append(sqft / 5000.0)
     features.append(stories / 3.0)
 
-    # Style one-hot (8 styles)
-    style_idx = config.STYLES.index(style) if style in config.STYLES else 0
+    # Style one-hot (8 styles). UI-only names map onto encoder buckets.
+    mapped_style = encoder_style_name(style)
+    style_idx = config.STYLES.index(mapped_style) if mapped_style in config.STYLES else 0
     style_vec = [0.0] * len(config.STYLES)
     style_vec[style_idx] = 1.0
     features.extend(style_vec)
@@ -379,7 +406,6 @@ class FloorPlanDataset(Dataset):
         bathroom_range = [1, 2, 3, 4]
         sqft_range = [1200, 1500, 1800, 2000, 2200, 2500, 2800, 3000, 3500, 4000]
         stories_range = [1, 2]
-        styles = list(STYLE_TEMPLATES.keys())
         garage_options = ["none", "1car", "2car", "3car"]
         laundry_options = ["none", "closet", "room"]
         outdoor_options = ["none", "patio", "deck", "both"]
@@ -390,7 +416,7 @@ class FloorPlanDataset(Dataset):
             bathrooms = min(rng.choice(bathroom_range), bedrooms)
             sqft = rng.choice(sqft_range)
             stories = rng.choice(stories_range)
-            style = rng.choice(styles)
+            style = rng.choice(list(config.STYLES))
             open_plan = rng.random() < STYLE_TEMPLATES[style]["open_plan_weight"]
             primary_suite = rng.random() < 0.75
             home_office = rng.random() < 0.4

@@ -1,0 +1,18 @@
+{
+  "lotShape": "square",
+  "lotWidth": 200.0,
+  "lotDepth": 200.0,
+  "bedrooms": 3,
+  "bathrooms": 2,
+  "sqft": 2800,
+  "stories": 1,
+  "style": "traditional",
+  "openPlan": false,
+  "primarySuite": true,
+  "homeOffice": true,
+  "formalDining": false,
+  "garage": "2car",
+  "laundry": "room",
+  "outdoor": "deck",
+  "ceilingHeight": "standard"
+}

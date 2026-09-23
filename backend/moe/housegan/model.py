@@ -211,14 +211,34 @@ class HouseGANGenerator(nn.Module):
 
 # ── Weight loading ────────────────────────────────────────────────────────────
 
-def load_pretrained(weights_path: str, device: str = "cpu") -> HouseGANGenerator:
-    """Load pre-trained HouseGAN++ weights."""
-    model = HouseGANGenerator()
-    ckpt = torch.load(weights_path, map_location=device, weights_only=False)
+def unwrap_state_dict(ckpt) -> dict:
+    """Return a raw parameter dict. Does not load weights."""
+    if not isinstance(ckpt, dict):
+        raise TypeError(f"checkpoint is {type(ckpt)!r}, expected dict state_dict")
+    for wrap in ("generator", "model_state_dict", "state_dict"):
+        inner = ckpt.get(wrap)
+        if isinstance(inner, dict) and inner and any(
+            torch.is_tensor(v) for v in inner.values()
+        ):
+            return inner
+    if any(torch.is_tensor(v) for v in ckpt.values()):
+        return ckpt
+    raise TypeError("checkpoint dict has no tensor state_dict")
 
-    # Handle both raw state_dict and checkpoint dicts
-    state = ckpt.get("generator", ckpt.get("model_state_dict", ckpt))
-    model.load_state_dict(state, strict=False)
+
+def load_pretrained(weights_path: str, device: str = "cpu"):
+    """Load official HouseGAN++ Generator weights with strict=True.
+
+    Never uses strict=False. The in-tree HouseGANGenerator cannot load
+    official checkpoints; production inference uses Conv-MPN Generator.
+    """
+    from .official_generator import Generator
+
+    model = Generator()
+    ckpt = torch.load(weights_path, map_location=device, weights_only=False)
+    state = unwrap_state_dict(ckpt)
+    model.load_state_dict(state, strict=True)
+    model.to(device)
     model.eval()
-    print(f"[HouseGAN] Loaded weights from {weights_path}")
+    print(f"[HouseGAN] Loaded official weights from {weights_path} device={device}")
     return model

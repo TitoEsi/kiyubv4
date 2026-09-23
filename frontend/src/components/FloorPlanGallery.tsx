@@ -5,15 +5,16 @@ interface Props {
   plans: FloorPlan[]
   loading: boolean
   onSelect: (plan: FloorPlan) => void
+  selectedId?: string | null
 }
 
 const CARD_LABELS = ['A', 'B', 'C', 'D', 'E', 'F']
 
 const STEPS = [
-  { n: '①', text: 'Set your room list and square footage' },
-  { n: '②', text: 'AI generates multiple plan variants for you' },
-  { n: '③', text: 'Pick a starting point and explore in 2D & 3D' },
-  { n: '④', text: 'Refine rooms, view walkthrough, export CAD' },
+  { n: '1', text: 'Set the project site, rooms, and living area' },
+  { n: '2', text: 'AI generates multiple plan variants for you' },
+  { n: '3', text: 'Pick a starting point and explore in 2D & 3D' },
+  { n: '4', text: 'Refine rooms, view walkthrough, export CAD' },
 ]
 
 function bedroomCount(plan: FloorPlan) {
@@ -33,18 +34,14 @@ function totalSqft(plan: FloorPlan) {
   return Math.round(plan.rooms.filter(r => !_UNCONDITIONED.has(r.type)).reduce((s, r) => s + r.width * r.height, 0))
 }
 
-export default function FloorPlanGallery({ plans, loading, onSelect }: Props) {
+export default function FloorPlanGallery({ plans, loading, onSelect, selectedId }: Props) {
   if (loading) {
     return (
-      <div className="charrette-loading">
+      <div className="charrette-loading" aria-busy="true" aria-live="polite">
         <div className="charrette-loading-icon">
           <span className="charrette-spinner" />
         </div>
-        <p className="charrette-loading-title">Generating plans with MOE AI…</p>
-        <p className="charrette-loading-sub">8 expert agents analyzing your constraints</p>
-        <div className="charrette-loading-dots">
-          <span /><span /><span />
-        </div>
+        <p className="charrette-loading-title">Generating candidates…</p>
       </div>
     )
   }
@@ -52,25 +49,24 @@ export default function FloorPlanGallery({ plans, loading, onSelect }: Props) {
   if (plans.length === 0) {
     return (
       <div className="charrette-empty">
-        <div className="charrette-empty-logo">
-          <svg viewBox="0 0 40 40" fill="none">
-            <rect x="4" y="18" width="32" height="18" rx="2" stroke="currentColor" strokeWidth="1.5"/>
-            <path d="M2 20 L20 6 L38 20" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"/>
-            <rect x="15" y="24" width="10" height="12" stroke="currentColor" strokeWidth="1.2"/>
-            <rect x="7" y="22" width="7" height="6" stroke="currentColor" strokeWidth="1.2"/>
-            <rect x="26" y="22" width="7" height="6" stroke="currentColor" strokeWidth="1.2"/>
+        <div className="studio-login-plate charrette-empty-plate" aria-hidden>
+          <svg viewBox="0 0 320 220" fill="none">
+            <rect x="1" y="1" width="318" height="218" stroke="currentColor" strokeOpacity="0.2" />
+            <rect x="28" y="36" width="168" height="148" stroke="currentColor" strokeWidth="1.2" />
+            <rect x="196" y="36" width="96" height="72" stroke="currentColor" strokeWidth="1.2" />
+            <rect x="196" y="108" width="96" height="76" stroke="currentColor" strokeWidth="1.2" />
           </svg>
         </div>
-        <h2 className="charrette-empty-title">Choose a Starting Point</h2>
-        <p className="charrette-empty-sub">Set your constraints and generate AI-designed floor plan variants</p>
-        <div className="charrette-steps">
+        <h2 className="charrette-empty-title">Choose a starting point</h2>
+        <p className="charrette-empty-sub">Set the project site, rooms, and living area, then generate candidates.</p>
+        <ol className="charrette-legend">
           {STEPS.map(s => (
-            <div key={s.n} className="charrette-step">
-              <div className="charrette-step-num">{s.n}</div>
-              <div className="charrette-step-text">{s.text}</div>
-            </div>
+            <li key={s.n} className="charrette-legend-item">
+              <span className="studio-index">{s.n.padStart(2, '0')}</span>
+              <span>{s.text}</span>
+            </li>
           ))}
-        </div>
+        </ol>
       </div>
     )
   }
@@ -89,15 +85,23 @@ export default function FloorPlanGallery({ plans, loading, onSelect }: Props) {
           const sqft = totalSqft(plan)
           const label = CARD_LABELS[idx] ?? String(idx + 1)
           const fp = `${Math.round(plan.totalWidth)}' × ${Math.round(plan.totalHeight)}'`
+          const pressed = selectedId === plan.id
 
           return (
-            <div key={plan.id} className="charrette-card" onClick={() => onSelect(plan)}>
+            <button
+              type="button"
+              key={plan.id}
+              className="charrette-card"
+              aria-pressed={pressed}
+              onClick={() => onSelect(plan)}
+            >
               <div className="charrette-card-label">{label}</div>
               <div className="charrette-card-preview">
                 <FloorPlanPreview plan={plan} width={280} height={200} />
               </div>
               <div className="charrette-card-footer">
                 <div className="charrette-card-stats">
+                  <span className="studio-meta">Scheme {label}</span>
                   <span className="charrette-stat">{sqft.toLocaleString()} sqft</span>
                   <span className="charrette-stat-sep">·</span>
                   {beds > 0 && <span className="charrette-stat">{beds} bed</span>}
@@ -106,7 +110,7 @@ export default function FloorPlanGallery({ plans, loading, onSelect }: Props) {
                 </div>
                 <div className="charrette-card-dims">{fp} · {plan.rooms.length} rooms</div>
               </div>
-            </div>
+            </button>
           )
         })}
       </div>
