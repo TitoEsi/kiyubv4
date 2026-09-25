@@ -4,24 +4,21 @@ import ConfirmDialog from '../components/ConfirmDialog'
 import KiyubLogo from '../components/KiyubLogo'
 import NotificationBell from '../components/NotificationBell'
 import ThemeToggle from '../components/ThemeToggle'
+import WorkflowFooter from '../components/WorkflowFooter'
 import { useAuth } from '../workflow/auth'
 import { roleHome } from '../workflow/paths'
+import { canOpenStudio, roleNavItems } from '../workflow/roleNav'
 
-export interface Crumb {
-  label: string
-  to?: string
+function navClass({ isActive }: { isActive: boolean }) {
+  return isActive ? 'wf-nav-link active' : 'wf-nav-link'
 }
 
 export default function WorkflowShell({
-  title,
-  crumbs,
   status,
   scratch,
   flush,
   children,
 }: {
-  title: string
-  crumbs?: Crumb[]
   status?: string
   scratch?: boolean
   flush?: boolean
@@ -30,8 +27,8 @@ export default function WorkflowShell({
   const { user, logout } = useAuth()
   const nav = useNavigate()
   const home = roleHome(user?.role)
-  const isClient = user?.role === 'CLIENT'
-  const isArchitect = user?.role === 'ARCHITECT'
+  const navItems = roleNavItems(user?.role)
+  const canStudio = canOpenStudio(user?.role)
   const [confirmSignOut, setConfirmSignOut] = useState(false)
 
   function signOut() {
@@ -47,37 +44,22 @@ export default function WorkflowShell({
           <KiyubLogo variant="full" decorative className="kiyub-logo-nav-full" />
           <KiyubLogo variant="mark" decorative className="kiyub-logo-nav-mark" />
         </Link>
-        {isClient && (
-          <nav className="wf-nav" aria-label="Client">
-            <NavLink to="/client" className={({ isActive }) => isActive ? 'wf-nav-link active' : 'wf-nav-link'}>Projects</NavLink>
-            <NavLink to="/contact" className={({ isActive }) => isActive ? 'wf-nav-link active' : 'wf-nav-link'}>Contact</NavLink>
+        {navItems.length > 0 && (
+          <nav className="wf-nav" aria-label="Workspace">
+            {navItems.map(item => (
+              <NavLink key={item.to} to={item.to} end={item.end} className={navClass}>
+                {item.label}
+              </NavLink>
+            ))}
           </nav>
         )}
-        {isArchitect && (
-          <nav className="wf-nav" aria-label="Architect">
-            <NavLink to="/architect" end className={({ isActive }) => isActive ? 'wf-nav-link active' : 'wf-nav-link'}>Dashboard</NavLink>
-            <NavLink to="/architect/projects" className={({ isActive }) => isActive ? 'wf-nav-link active' : 'wf-nav-link'}>Projects</NavLink>
-            <NavLink to="/architect/clients" className={({ isActive }) => isActive ? 'wf-nav-link active' : 'wf-nav-link'}>Clients</NavLink>
-            <NavLink to="/about" className={({ isActive }) => isActive ? 'wf-nav-link active' : 'wf-nav-link'}>About</NavLink>
-            <NavLink to="/contact" className={({ isActive }) => isActive ? 'wf-nav-link active' : 'wf-nav-link'}>Contact</NavLink>
-          </nav>
-        )}
-        <nav className="wf-crumbs" aria-label="Breadcrumb">
-          {crumbs?.map((c, i) => (
-            <span key={`${c.label}-${i}`}>
-              {i > 0 && <span aria-hidden> / </span>}
-              {c.to ? <Link to={c.to}>{c.label}</Link> : <span>{c.label}</span>}
-            </span>
-          ))}
-          {!crumbs?.length && <span className="wf-title">{title}</span>}
-        </nav>
         {scratch && <span className="wf-scratch">Scratch studio</span>}
         {status && <span className="wf-status-chip">{status}</span>}
         <div className="wf-top-end">
           <ThemeToggle />
           {user && <NotificationBell />}
           {user && <span className="wf-user">{user.email}</span>}
-          <Link className="wf-link" to="/sandbox">Studio</Link>
+          {canStudio && <Link className="wf-link" to="/sandbox">Studio</Link>}
           {user ? (
             <button className="wf-action" type="button" onClick={() => setConfirmSignOut(true)}>Sign out</button>
           ) : (
@@ -86,6 +68,7 @@ export default function WorkflowShell({
         </div>
       </header>
       <div className={flush ? 'wf-body wf-body-flush' : 'wf-body'}>{children}</div>
+      {!flush && <WorkflowFooter />}
       {confirmSignOut && (
         <ConfirmDialog
           title="Sign out"

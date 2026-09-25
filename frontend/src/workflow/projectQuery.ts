@@ -46,7 +46,7 @@ export function clientMatches(row: ArchitectClientRow, query: string): boolean {
   const q = query.trim().toLowerCase()
   if (!q) return true
   const name = displayNameFromEmail(row.email)
-  return [name, row.email, row.project_name, row.invitation_status || '', row.project_status]
+  return [name, row.email, row.project_name || '', row.invitation_status || '', row.project_status || '']
     .join(' ')
     .toLowerCase()
     .includes(q)

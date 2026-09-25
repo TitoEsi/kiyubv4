@@ -1,10 +1,16 @@
-import { FormEvent, useState } from 'react'
+import { FormEvent, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import FloorPlanPreview from '../components/FloorPlanPreview'
-import KiyubLogo from '../components/KiyubLogo'
-import ThemeToggle from '../components/ThemeToggle'
-import { SAMPLE_PLANS } from '../data/samplePlans'
+import ConceptCarousel from '../components/ConceptCarousel'
+import LandingHeader from '../components/LandingHeader'
+import { LANDING_CONCEPTS } from '../data/landingConcepts'
 import { submitInquiry } from '../workflow/api'
+
+const ABOUT = [
+  { n: '01', title: 'AI-Assisted Floor-Plan Generation', body: 'Generate residential floor-plan concepts from architectural requirements and preferences.' },
+  { n: '02', title: '2D + 3D Architectural Visualization', body: 'Explore designs through both 2D floor plans and 3D visualization.' },
+  { n: '03', title: 'Collaborative Architect-Client Workflow', body: 'Allow architects and clients to work around the same project and review design updates.' },
+  { n: '04', title: 'Design Review and Version Management', body: 'Keep design iterations organized so project changes can be reviewed throughout the workflow.' },
+]
 
 export default function LandingPage() {
   const [name, setName] = useState('')
@@ -13,6 +19,20 @@ export default function LandingPage() {
   const [sent, setSent] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const pageRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const root = pageRef.current
+    if (!root) return
+    const nodes = root.querySelectorAll('.landing-reveal')
+    const io = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) entry.target.classList.add('is-in')
+      }
+    }, { threshold: 0.16 })
+    nodes.forEach(n => io.observe(n))
+    return () => io.disconnect()
+  }, [])
 
   async function onInquire(e: FormEvent) {
     e.preventDefault()
@@ -29,68 +49,55 @@ export default function LandingPage() {
   }
 
   return (
-    <div className="landing-page">
-      <header className="landing-top">
-        <Link to="/" className="wf-brand" aria-label="KIYUB home">
-          <KiyubLogo variant="full" />
-        </Link>
-        <div className="wf-top-end">
-          <ThemeToggle />
-          <Link className="catalog-generate-btn landing-signin" to="/login">Sign in</Link>
-        </div>
-      </header>
+    <div className="landing-page" ref={pageRef}>
+      <LandingHeader />
 
       <section className="landing-hero">
-        <p className="studio-meta">KIYUB</p>
-        <h1>Design your space with intelligence.</h1>
-        <p className="landing-lede">
-          AI-assisted residential floor plans, developed as drawings in a working studio.
+        <p className="studio-meta landing-enter landing-enter-1">KIYUB</p>
+        <h1 className="landing-enter landing-enter-2">Design your space with intelligence.</h1>
+        <p className="landing-lede landing-enter landing-enter-3">
+          AI-assisted architectural floor-plan design — residential concepts developed as drawings in a working studio.
         </p>
-        <div className="landing-hero-actions">
-          <Link className="catalog-generate-btn" to="/login">Sign in</Link>
+        <div className="landing-hero-actions landing-enter landing-enter-4">
+          <Link className="landing-hero-cta" to="/login">Sign in</Link>
           <a className="wf-link" href="#contact">Request access</a>
         </div>
+        <figure className="landing-hero-visual landing-enter landing-enter-5">
+          <img
+            src={LANDING_CONCEPTS[0].renderImage}
+            alt="Example architectural visualization for KIYUB"
+          />
+        </figure>
       </section>
 
-      <section className="landing-section" id="about">
+      <section className="landing-section landing-reveal" id="about">
         <p className="studio-meta">About KIYUB</p>
         <h2>Design smarter. Explore faster.</h2>
-        <p>
-          KIYUB helps clients and architectural professionals transform requirements into
-          residential floor-plan concepts through an interactive, AI-assisted design workflow.
-        </p>
-        <p>
-          From the initial brief to floor-plan exploration and review, KIYUB brings the design
-          process into one collaborative workspace.
-        </p>
-        <p>
+        <ol className="landing-about">
+          {ABOUT.map(item => (
+            <li key={item.n}>
+              <span className="landing-about-n">{item.n}</span>
+              <div>
+                <h3>{item.title}</h3>
+                <p>{item.body}</p>
+              </div>
+            </li>
+          ))}
+        </ol>
+        <p className="landing-disclaimer">
           KIYUB is a conceptual design and planning tool. It does not replace licensed architects,
           and generated designs are not claimed to be building-code compliant.
         </p>
       </section>
 
-      <section className="landing-section" id="gallery">
-        <p className="studio-meta">Sample plans</p>
-        <h2>Conceptual layouts</h2>
-        <p className="wf-hint">Editorial plates for the public gallery — not live generation output.</p>
-        <ul className="landing-gallery">
-          {SAMPLE_PLANS.map(plan => (
-            <li key={plan.id}>
-              <article className="studio-tile">
-                <div className="studio-tile-plate">
-                  <FloorPlanPreview plan={plan} width={320} height={180} />
-                </div>
-                <div className="studio-tile-copy">
-                  <h3 className="studio-tile-name">{plan.name}</h3>
-                  <p className="studio-tile-meta">Labeled conceptual layout</p>
-                </div>
-              </article>
-            </li>
-          ))}
-        </ul>
+      <section className="landing-section landing-reveal landing-gallery-section" id="gallery">
+        <p className="studio-meta">Example Concepts</p>
+        <h2>Concept layouts</h2>
+        <p className="landing-disclaimer">Example concepts shown for demonstration purposes only.</p>
+        <ConceptCarousel />
       </section>
 
-      <section className="landing-section" id="contact">
+      <section className="landing-section landing-reveal" id="contact">
         <p className="studio-meta">Request access</p>
         <h2>Contact</h2>
         <p>Tell us who you are. This form stores a request; it does not create an account.</p>
@@ -120,7 +127,7 @@ export default function LandingPage() {
               required
               rows={5}
             />
-            <button className="catalog-generate-btn" type="submit" disabled={loading}>
+            <button className="landing-hero-cta" type="submit" disabled={loading}>
               {loading ? 'Sending…' : 'Send request'}
             </button>
           </form>
@@ -128,9 +135,11 @@ export default function LandingPage() {
       </section>
 
       <footer className="landing-foot">
+        <a href="#about">About</a>
+        <a href="#gallery">Concepts</a>
+        <a href="#contact">Contact</a>
         <Link to="/terms">Terms</Link>
         <Link to="/privacy">Privacy</Link>
-        <Link to="/login">Sign in</Link>
       </footer>
     </div>
   )

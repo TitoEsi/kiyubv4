@@ -1,7 +1,8 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import InviteClientModal from '../components/InviteClientModal'
 import WorkflowShell from './WorkflowShell'
 import ProjectRegister from './ProjectRegister'
-import { createProject, listNotifications, listProjects, Notification, Project } from '../workflow/api'
+import { listNotifications, listProjects, Notification, Project } from '../workflow/api'
 import { filterAndSortProjects, ProjectSort } from '../workflow/projectQuery'
 
 export default function ArchitectProjects() {
@@ -9,8 +10,8 @@ export default function ArchitectProjects() {
   const [notes, setNotes] = useState<Notification[]>([])
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<ProjectSort>('updated')
-  const [name, setName] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [inviteOpen, setInviteOpen] = useState(false)
 
   async function refresh() {
     setProjects(await listProjects())
@@ -23,26 +24,12 @@ export default function ArchitectProjects() {
 
   const visible = useMemo(() => filterAndSortProjects(projects, query, sort), [projects, query, sort])
 
-  async function onCreate(e: FormEvent) {
-    e.preventDefault()
-    const trimmed = name.trim()
-    if (!trimmed) return
-    try {
-      await createProject(trimmed)
-      setName('')
-      await refresh()
-    } catch (err: unknown) {
-      const ax = err as { response?: { data?: { detail?: string } } }
-      setError(ax.response?.data?.detail || 'Could not create project')
-    }
-  }
-
   const empty = query
     ? 'Try another search term or clear your filters.'
-    : 'Once you create or are assigned a project, it will appear here.'
+    : 'Invite a client. The project appears here after they accept.'
 
   return (
-    <WorkflowShell title="Projects">
+    <WorkflowShell>
       {error && <div className="error-msg" role="alert">{error}</div>}
       <div className="studio-home">
         <header className="studio-page-head">
@@ -50,11 +37,9 @@ export default function ArchitectProjects() {
             <p className="studio-meta">Register</p>
             <h1 className="studio-page-title">Projects</h1>
           </div>
-          <form className="studio-inline-create" onSubmit={onCreate}>
-            <label htmlFor="new-project-name" className="sr-only">New project</label>
-            <input id="new-project-name" value={name} onChange={e => setName(e.target.value)} placeholder="New project name" />
-            <button className="catalog-generate-btn" type="submit">Create</button>
-          </form>
+          <button type="button" className="catalog-generate-btn" onClick={() => setInviteOpen(true)}>
+            Invite client
+          </button>
         </header>
         <div className="studio-toolbar studio-toolbar-wrap">
           <label className="sr-only" htmlFor="project-search">Search projects</label>
@@ -84,6 +69,12 @@ export default function ArchitectProjects() {
           empty={empty}
         />
       </div>
+      {inviteOpen && (
+        <InviteClientModal
+          onClose={() => setInviteOpen(false)}
+          onSent={() => { void refresh() }}
+        />
+      )}
     </WorkflowShell>
   )
 }

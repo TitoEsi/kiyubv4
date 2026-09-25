@@ -5,7 +5,7 @@
  * lines, north arrow, scale bar, and title block.
  */
 
-import React, { useMemo } from 'react'
+import React, { useMemo, useState } from 'react'
 import { FloorPlan, Room, roomBoundary, roomCentroid, roomParts } from '../types/floorplan'
 import { annotationPoint, commentRoleLabel, pinTargetLabel, PlanAnnotation } from './planAnnotations'
 import { displayNameFromEmail, formatDate } from '../workflow/displayName'
@@ -956,6 +956,8 @@ export default function ArchPlan({
 }: ArchPlanProps): React.ReactElement {
   const svgW = containerWidth
   const svgH = containerHeight
+  const [editId, setEditId] = useState<string | null>(null)
+  const [editBody, setEditBody] = useState('')
 
   const { S, ox, oy } = useMemo(
     () => computeLayout(plan, svgW, svgH),
@@ -1241,31 +1243,67 @@ export default function ArchPlan({
           >
             <p className="plan-note-role">{commentRoleLabel(a.author_role)}</p>
             <p className="plan-note-author">{authorName}</p>
-            <p className="plan-note-body">{a.body}</p>
-            {target && <p className="plan-note-meta">Pinned to: {target}</p>}
-            {created && <p className="plan-note-meta">Created: {created}</p>}
-            {mine && (
-              <div className="plan-note-actions">
-                <button
-                  type="button"
-                  onClick={e => {
-                    e.stopPropagation()
-                    const next = window.prompt('Edit comment', a.body)
-                    if (next != null && next.trim()) onUpdateAnnotation?.(a.id, next.trim())
-                  }}
-                >
-                  Edit
-                </button>
-                <button
-                  type="button"
-                  onClick={e => {
-                    e.stopPropagation()
-                    onDeleteAnnotation?.(a.id)
-                  }}
-                >
-                  Delete
-                </button>
-              </div>
+            {editId === a.id ? (
+              <>
+                <textarea
+                  className="plan-note-editor"
+                  value={editBody}
+                  onChange={e => setEditBody(e.target.value)}
+                  aria-label="Edit comment"
+                />
+                <div className="plan-note-actions">
+                  <button
+                    type="button"
+                    onClick={e => {
+                      e.stopPropagation()
+                      setEditId(null)
+                      setEditBody('')
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={e => {
+                      e.stopPropagation()
+                      if (editBody.trim()) onUpdateAnnotation?.(a.id, editBody.trim())
+                      setEditId(null)
+                      setEditBody('')
+                    }}
+                  >
+                    Save
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="plan-note-body">{a.body}</p>
+                {target && <p className="plan-note-meta">Pinned to: {target}</p>}
+                {created && <p className="plan-note-meta">Created: {created}</p>}
+                {mine && (
+                  <div className="plan-note-actions">
+                    <button
+                      type="button"
+                      onClick={e => {
+                        e.stopPropagation()
+                        setEditId(a.id)
+                        setEditBody(a.body)
+                      }}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={e => {
+                        e.stopPropagation()
+                        onDeleteAnnotation?.(a.id)
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                )}
+              </>
             )}
           </div>
         )

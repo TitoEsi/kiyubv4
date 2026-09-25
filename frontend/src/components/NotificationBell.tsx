@@ -1,10 +1,17 @@
 import { Bell } from '@phosphor-icons/react'
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { listNotifications, markNotificationRead, Notification } from '../workflow/api'
+import { listNotifications, markAllNotificationsRead, markNotificationRead, Notification } from '../workflow/api'
 
 function kindLabel(kind: string) {
   return kind.replace(/_/g, ' ')
+}
+
+function stamp(iso?: string | null) {
+  if (!iso) return null
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return null
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 }
 
 export default function NotificationBell() {
@@ -51,6 +58,15 @@ export default function NotificationBell() {
     }
   }
 
+  async function onReadAll() {
+    setNotes(prev => prev.map(n => ({ ...n, read: true })))
+    try {
+      await markAllNotificationsRead()
+    } catch {
+      await refresh()
+    }
+  }
+
   return (
     <div className="wf-bell-wrap" ref={wrapRef}>
       <button
@@ -65,6 +81,14 @@ export default function NotificationBell() {
       </button>
       {open && (
         <div className="wf-notify-pop" role="dialog" aria-label="Notifications">
+          <div className="wf-notify-head">
+            <p className="studio-meta">Notifications</p>
+            {unread > 0 && (
+              <button type="button" className="wf-notify-mark-all" onClick={() => void onReadAll()}>
+                Mark all as read
+              </button>
+            )}
+          </div>
           {notes.length === 0 ? (
             <p className="wf-hint">No notifications.</p>
           ) : (
@@ -75,11 +99,13 @@ export default function NotificationBell() {
                     <Link to={`/projects/${n.project_id}`} onClick={() => { onRead(n); setOpen(false) }}>
                       <span className="studio-meta">{kindLabel(n.kind)}</span>
                       <span>{n.message}</span>
+                      {stamp(n.created_at) && <span className="wf-notify-time">{stamp(n.created_at)}</span>}
                     </Link>
                   ) : (
                     <button type="button" className="wf-notify-plain" onClick={() => onRead(n)}>
                       <span className="studio-meta">{kindLabel(n.kind)}</span>
                       <span>{n.message}</span>
+                      {stamp(n.created_at) && <span className="wf-notify-time">{stamp(n.created_at)}</span>}
                     </button>
                   )}
                 </li>

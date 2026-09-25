@@ -1,18 +1,18 @@
 {
   "lotShape": "square",
-  "lotWidth": 200.0,
-  "lotDepth": 200.0,
-  "bedrooms": 3,
+  "lotWidth": 30.0,
+  "lotDepth": 30.0,
+  "bedrooms": 2,
   "bathrooms": 2,
-  "sqft": 2800,
+  "sqft": 1800,
   "stories": 1,
-  "style": "traditional",
+  "style": "modern",
   "openPlan": false,
   "primarySuite": true,
-  "homeOffice": true,
+  "homeOffice": false,
   "formalDining": false,
-  "garage": "2car",
-  "laundry": "room",
-  "outdoor": "deck",
-  "ceilingHeight": "standard"
+  "garage": "1car",
+  "laundry": "closet",
+  "outdoor": "patio",
+  "ceilingHeight": "high"
 }

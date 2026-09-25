@@ -7,6 +7,7 @@ import {
   canPublish,
   canSelectCandidate,
   canSubmitReview,
+  canViewAudit,
   canViewProject,
 } from './permissions'
 
@@ -44,10 +45,16 @@ describe('workflow permissions', () => {
     expect(canGenerate(architect, { ...assigned, has_floor_plan: true })).toBe(true)
   })
 
+  it('lets clients view their own project audit', () => {
+    expect(canViewAudit(client)).toBe(true)
+    expect(canViewAudit(architect)).toBe(true)
+  })
+
   it('lets the assigned client send IN_PROGRESS work for checking', () => {
     expect(canSubmitReview(client, assigned)).toBe(false)
     expect(canSubmitReview(client, { ...assigned, has_floor_plan: true })).toBe(true)
     expect(canSubmitReview(client, { ...assigned, has_floor_plan: true, status: 'FOR_CHECKING' })).toBe(false)
     expect(canSubmitReview(architect, assigned)).toBe(true)
+    expect(canSubmitReview(architect, { ...assigned, status: 'FOR_CHECKING' })).toBe(true)
   })
 })

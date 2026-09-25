@@ -2,7 +2,7 @@ import WorkflowShell from './WorkflowShell'
 
 export default function ContactPage() {
   return (
-    <WorkflowShell title="Contact" crumbs={[{ label: 'Contact' }]}>
+    <WorkflowShell>
       <article className="studio-home studio-prose">
         <p className="studio-meta">Contact us</p>
         <h1 className="studio-greeting-title">Have a question about your project?</h1>

@@ -1,7 +1,28 @@
 import asyncio
 import io
 import json
+import os
 import time
+from pathlib import Path
+
+def _load_root_env() -> None:
+    """Load repo-root / backend .env into os.environ without overriding existing vars."""
+    here = Path(__file__).resolve().parent
+    for candidate in (here.parent / ".env", here / ".env"):
+        if not candidate.is_file():
+            continue
+        for raw in candidate.read_text(encoding="utf-8-sig").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key, value = key.strip(), value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+        break
+
+
+_load_root_env()
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -22,7 +43,7 @@ from moe.config import MOEConfig
 from moe.experts import EXPERT_NAMES
 from moe.housegan.inference import get_housegan_status
 from workflow.api import router as workflow_router
-from workflow.db import SessionLocal, init_db
+from workflow.db import SessionLocal, init_db, require_supabase_runtime
 from workflow.seed import seed_users
 
 app = FastAPI(title="KIYUB v4 API")
@@ -41,6 +62,7 @@ async def startup_event():
         load_model()
     except Exception as e:
         print(f"[MOE] Init warning: {e} — MOE generation may be unavailable.")
+    require_supabase_runtime()
     try:
         init_db()
         db = SessionLocal()
@@ -51,8 +73,6 @@ async def startup_event():
     except Exception as e:
         print(f"[WORKFLOW] Init warning: {e} — project workflow may be unavailable.")
 
-
-import os
 
 ALLOWED_ORIGINS = os.getenv(
     "ALLOWED_ORIGINS",
@@ -504,32 +524,7 @@ async def moe_experts(constraints: Constraints):
 async def auth_register(req: AuthRequest):
     """Register an API key, or a workflow user when password is provided."""
     if req.password:
-        from workflow.auth import create_token, hash_password
-        from workflow.db import SessionLocal
-        from workflow.models import User
-        from workflow.audit import log_event
-        from workflow.state import ROLES
-        from workflow.services import serialize_user
-        role = (req.role or "CLIENT").upper()
-        if role not in ROLES or role in ("MAIN_ADMIN", "IT_PERSONNEL"):
-            raise HTTPException(status_code=403, detail="Cannot self-register this role")
-        db = SessionLocal()
-        try:
-            email = req.email.lower().strip()
-            if db.query(User).filter(User.email == email).one_or_none():
-                raise HTTPException(status_code=409, detail="Email already registered")
-            approved = role == "CLIENT"
-            user = User(email=email, password_hash=hash_password(req.password), role=role, approved=approved)
-            db.add(user)
-            db.flush()
-            log_event(db, event_type="ACCOUNT_MODIFIED", actor_id=user.id, target=user.id, metadata={"created": True})
-            db.commit()
-            db.refresh(user)
-            if role == "ARCHITECT":
-                return {"user": serialize_user(user), "message": "Architect account created. Wait for IT approval before logging in."}
-            return {"token": create_token(user), "user": serialize_user(user)}
-        finally:
-            db.close()
+        raise HTTPException(status_code=403, detail="Accounts are created by invitation")
     try:
         record = key_store.create_key(tier=req.tier, email=req.email)
         return {

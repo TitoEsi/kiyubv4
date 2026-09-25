@@ -2,7 +2,7 @@ import WorkflowShell from './WorkflowShell'
 
 export default function AboutPage() {
   return (
-    <WorkflowShell title="About" crumbs={[{ label: 'About' }]}>
+    <WorkflowShell>
       <article className="studio-home studio-prose">
         <p className="studio-meta">About KIYUB</p>
         <h1 className="studio-greeting-title">Design smarter. Explore faster.</h1>

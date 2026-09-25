@@ -42,6 +42,7 @@ import {
   submitReview,
 } from '../workflow/api'
 import { canEditDesign, canOpenArchitectCanvas, canSubmitReview } from '../workflow/permissions'
+import { clientVisibleScene } from '../workflow/reviewScene'
 import { displayNameFromEmail } from '../workflow/displayName'
 import { clientCommentCountLabel, commentRoleLabel } from '../components/planAnnotations'
 import ConfirmDialog from '../components/ConfirmDialog'
@@ -74,6 +75,8 @@ export default function ProjectPage() {
   const [currentRevisionId, setCurrentRevisionId] = useState<string | null>(null)
   const [selectedGallery, setSelectedGallery] = useState<FloorPlan | null>(null)
   const [scene, setScene] = useState<SceneDocument | null>(null)
+  const [submittedScene, setSubmittedScene] = useState<SceneDocument | null>(null)
+  const [submittedRevisionId, setSubmittedRevisionId] = useState<string | null>(null)
   const [workingSaved, setWorkingSaved] = useState(false)
   const [formalVersion, setFormalVersion] = useState<number | null>(null)
   const workingCopyRef = useRef<unknown>(null)
@@ -104,7 +107,6 @@ export default function ProjectPage() {
   const generating = project?.generation_status === 'running'
   const architectCanOpen = !!(actor && project && canOpenArchitectCanvas(actor, project))
   const clientCommentCount = project?.client_comment_count ?? comments.filter(c => c.author_role === 'CLIENT').length
-  const stageLabel = stage === 'ARCHITECT_DESIGN' ? 'Design' : stage === 'AI_PROPOSAL' ? 'Candidates' : stage === 'FINAL_DESIGN' ? 'Design' : 'Brief'
 
   async function refresh() {
     if (!projectId) return
@@ -112,7 +114,12 @@ export default function ProjectPage() {
     setProject(detail.project)
     setStage(detail.document.stage)
     setCurrentRevisionId(detail.document.current_revision_id)
-    if (detail.current_revision?.floor_plan) {
+    const visible = clientVisibleScene(detail)
+    setSubmittedScene(visible.scene)
+    setSubmittedRevisionId(visible.revisionId)
+    if (visible.floorPlan) {
+      setCurrentPlan(visible.floorPlan)
+    } else if (detail.current_revision?.floor_plan) {
       setCurrentPlan(detail.current_revision.floor_plan)
     }
     if (detail.current_revision?.version != null) {
@@ -137,6 +144,8 @@ export default function ProjectPage() {
     setCanvasOpen(false)
     setSelectedAnnotationId(null)
     setScene(null)
+    setSubmittedScene(null)
+    setSubmittedRevisionId(null)
     sceneSourceRef.current = null
     workingCopyRef.current = null
     setWorkingSaved(false)
@@ -237,6 +246,24 @@ export default function ProjectPage() {
     await onSaveRevision()
   }
 
+  async function onArchitectSubmitReview() {
+    if (!projectId) return
+    if (autosaveTimer.current) {
+      window.clearTimeout(autosaveTimer.current)
+      autosaveTimer.current = null
+    }
+    if (!scene) {
+      setError('A current SceneDocument is required to submit for review.')
+      return
+    }
+    await saveWorkingDesign(projectId, scene)
+    await submitReview(projectId, {
+      scene_document: scene,
+      floor_plan: sceneDocumentToFloorPlan(scene),
+    })
+    await refresh()
+  }
+
   async function onAddComment() {
     if (!projectId || !commentBody.trim()) return
     await addComment(projectId, commentBody.trim())
@@ -274,16 +301,16 @@ export default function ProjectPage() {
   useEffect(() => {
     const plan = currentPlan || selectedGallery
     if (!plan) return
-    const key = `${currentPlan?.id || selectedGallery?.id || ''}:${currentRevisionId || 'gallery'}`
+    const key = `${currentPlan?.id || selectedGallery?.id || ''}:${currentRevisionId || 'gallery'}:${submittedRevisionId || ''}`
     if (sceneSourceRef.current === key && scene) return
     sceneSourceRef.current = key
     const loaded = loadLiveScene(plan, undefined, {
       projectId,
-      existing: isArchitect && currentPlan ? workingCopyRef.current : undefined,
+      existing: isArchitect && currentPlan ? workingCopyRef.current : submittedScene,
     })
     setScene(loaded)
     setWorkingSaved(!!(isArchitect && currentPlan && workingCopyRef.current))
-  }, [currentPlan, selectedGallery, currentRevisionId, isArchitect, projectId, scene])
+  }, [currentPlan, selectedGallery, currentRevisionId, submittedRevisionId, submittedScene, isArchitect, projectId, scene])
 
   useEffect(() => {
     if (!isArchitect || !canvasOpen || currentPlan || !candidates.length || acceptingRef.current) return
@@ -310,16 +337,7 @@ export default function ProjectPage() {
   }
 
   return (
-    <WorkflowShell
-      title={project?.name || 'Project'}
-      status={project?.status}
-      flush
-      crumbs={[
-        { label: 'Projects', to: home },
-        { label: project?.name || 'Project', to: projectId ? `/projects/${projectId}` : undefined },
-        { label: stageLabel },
-      ]}
-    >
+    <WorkflowShell status={project?.status} flush>
       {error && (
         <div className="error-msg" role="alert" tabIndex={-1} ref={errorRef}>{error}</div>
       )}
@@ -382,8 +400,8 @@ export default function ProjectPage() {
                 Accept candidate
               </button>
             )}
-            {editable && project?.status === 'IN_PROGRESS' && (
-              <button type="button" className="back-btn" onClick={async () => { await submitReview(projectId!); await refresh() }}>Submit for checking</button>
+            {isArchitect && canSendReview && (
+              <button type="button" className="back-btn" onClick={() => { onArchitectSubmitReview().catch(e => setError(String(e))) }}>Submit for checking</button>
             )}
             {isClient && canSendReview && !reviewSent && (
               <button type="button" className="catalog-generate-btn" onClick={() => setConfirmReview(true)}>Send to Review</button>
@@ -535,10 +553,11 @@ export default function ProjectPage() {
               onUpdate={plan => { if (editable) { setCurrentPlan(plan); setDirty(true) } }}
               readOnly={readOnly || !currentPlan || !editable}
               projectId={projectId}
-              revisionId={currentRevisionId || undefined}
+              revisionId={submittedRevisionId || currentRevisionId || undefined}
               role={user?.role}
               dirty={dirty}
               onSave={onSaveDesign}
+              existingScene={submittedScene}
               {...annotationHandlers}
             />
           ) : (

@@ -77,10 +77,10 @@ export function canPublish(actor: Actor, project: ProjectRef): boolean {
 }
 
 export function canSubmitReview(actor: Actor, project: ProjectRef): boolean {
-  if (project.status !== 'IN_PROGRESS') return false
   if (actor.role === 'ARCHITECT' && actor.approved !== false && project.architect_id === actor.id) {
-    return true
+    return project.status === 'IN_PROGRESS' || project.status === 'FOR_CHECKING'
   }
+  if (project.status !== 'IN_PROGRESS') return false
   if (actor.role === 'CLIENT' && project.client_id === actor.id && project.has_floor_plan) {
     return true
   }
@@ -92,5 +92,5 @@ export function canManageAccounts(actor: Actor): boolean {
 }
 
 export function canViewAudit(actor: Actor): boolean {
-  return actor.role === 'MAIN_ADMIN' || actor.role === 'IT_PERSONNEL' || actor.role === 'ARCHITECT'
+  return actor.role === 'MAIN_ADMIN' || actor.role === 'IT_PERSONNEL' || actor.role === 'ARCHITECT' || actor.role === 'CLIENT'
 }

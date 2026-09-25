@@ -1,15 +1,18 @@
 """Workflow HTTP API. Does not replace POST /api/generate/moe."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
 from .audit import log_event
-from .auth import actor_from, create_token, get_current_user, hash_password, verify_password
-from .db import get_db
+from .auth import account_block_reason, actor_from, get_current_user, issue_session_token, verify_password
+from .db import get_db, supabase_enabled
 from .models import User
+from .repositories.base import MemoryStore as Session
 from .schemas import (
     AccountPatch,
+    ArchitectApplicationComplete,
+    ArchitectApplicationCreate,
+    ArchitectApplicationReject,
     BriefBody,
     CommentBody,
     CommentPatch,
@@ -20,50 +23,54 @@ from .schemas import (
     ProjectAssign,
     ProjectCreate,
     RegisterBody,
+    SubmitReviewBody,
     WorkingDesignBody,
 )
 from . import services as svc
 from .permissions import can_manage_accounts
-from .state import ROLES
 
 router = APIRouter(prefix="/api", tags=["workflow"])
 
 
 @router.post("/auth/login")
 def login(body: LoginBody, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == body.email.lower()).one_or_none()
+    email = body.email.lower().strip()
+    if supabase_enabled():
+        from supabase.auth import sign_in_password
+
+        token, user_id = sign_in_password(email, body.password)
+        user = db.get(User, user_id) or db.query(User).filter(User.email == email).one_or_none()
+        if user is None:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unknown user")
+        blocked = account_block_reason(user)
+        if blocked:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, blocked)
+        log_event(db, event_type="LOGIN", actor_id=user.id, target=user.email)
+        db.commit()
+        return {"token": token, "user": svc.serialize_user(user)}
+    user = db.query(User).filter(User.email == email).one_or_none()
     if user is None or not verify_password(body.password, user.password_hash):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid email or password")
-    if user.role == "ARCHITECT" and not user.approved:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Architect account pending IT approval")
+    blocked = account_block_reason(user)
+    if blocked:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, blocked)
     log_event(db, event_type="LOGIN", actor_id=user.id, target=user.email)
     db.commit()
-    return {"token": create_token(user), "user": svc.serialize_user(user)}
+    return {"token": issue_session_token(user), "user": svc.serialize_user(user)}
 
 
 @router.post("/auth/signup")
 def signup(body: RegisterBody, db: Session = Depends(get_db)):
-    role = body.role.upper()
-    if role not in ROLES:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid role")
-    if role in ("MAIN_ADMIN", "IT_PERSONNEL"):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Admin and IT accounts cannot self-register")
     email = body.email.lower().strip()
-    if role == "CLIENT":
-        if not body.invitation_token:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "A valid architect invitation is required")
-        user = svc.register_client_from_invite(db, email, body.password, body.invitation_token, hash_password)
-        return {"token": create_token(user), "user": svc.serialize_user(user)}
-    if db.query(User).filter(User.email == email).one_or_none():
-        raise HTTPException(status.HTTP_409_CONFLICT, "Email already registered")
-    approved = False
-    user = User(email=email, password_hash=hash_password(body.password), role=role, approved=approved)
-    db.add(user)
-    db.flush()
-    log_event(db, event_type="ACCOUNT_MODIFIED", actor_id=user.id, target=user.id, metadata={"created": True, "role": role})
-    db.commit()
-    db.refresh(user)
-    return {"user": svc.serialize_user(user), "message": "Architect account created. Wait for IT approval before logging in."}
+    if body.invitation_token:
+        result = svc.complete_client_account(db, email, body.password, body.invitation_token, body.full_name)
+        user = result["user"]
+        return {
+            "token": issue_session_token(user, body.password),
+            "user": svc.serialize_user(user),
+            "project": result.get("project"),
+        }
+    raise HTTPException(status.HTTP_403_FORBIDDEN, "Accounts are created by invitation")
 
 
 @router.get("/auth/me")
@@ -175,8 +182,19 @@ def remove_comment(project_id: str, comment_id: str, user: User = Depends(get_cu
 
 
 @router.post("/projects/{project_id}/submit-review")
-def submit_review(project_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return svc.project_as_dict(svc.submit_review(db, actor_from(user), project_id))
+def submit_review(
+    project_id: str,
+    body: SubmitReviewBody | None = Body(default=None),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return svc.submit_review(
+        db,
+        actor_from(user),
+        project_id,
+        scene_document=body.scene_document if body else None,
+        floor_plan=body.floor_plan if body else None,
+    )
 
 
 @router.post("/projects/{project_id}/request-revision")
@@ -210,6 +228,12 @@ def notifications(user: User = Depends(get_current_user), db: Session = Depends(
     return svc.list_notifications(db, actor_from(user))
 
 
+@router.post("/notifications/read-all")
+def read_all_notifications(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    count = svc.mark_all_notifications_read(db, actor_from(user))
+    return {"ok": True, "count": count}
+
+
 @router.post("/notifications/{notification_id}/read")
 def read_notification(notification_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     svc.mark_notification_read(db, actor_from(user), notification_id)
@@ -234,12 +258,28 @@ def accounts(user: User = Depends(get_current_user), db: Session = Depends(get_d
 def patch_account(user_id: str, body: AccountPatch, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not can_manage_accounts(actor_from(user)):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot manage accounts")
-    updated = svc.patch_account(db, actor_from(user), user_id, body.approved, body.role)
+    updated = svc.patch_account(db, actor_from(user), user_id, body.approved, body.role, body.suspended)
     return svc.serialize_user(updated)
 
 
+@router.delete("/accounts/{user_id}")
+def delete_account(user_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    updated = svc.soft_delete_account(db, actor_from(user), user_id)
+    return svc.serialize_user(updated)
+
+
+@router.post("/invitations")
+def create_invitation(body: InvitationCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return svc.create_client_invitation(db, actor_from(user), body.email, body.project_name, body.resend)
+
+
+@router.get("/invitations")
+def list_my_invitations(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return svc.list_invitations(db, actor_from(user))
+
+
 @router.post("/projects/{project_id}/invitations")
-def create_invitation(project_id: str, body: InvitationCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_project_invitation(project_id: str, body: InvitationCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return svc.create_invitation(db, actor_from(user), project_id, body.email, body.resend)
 
 
@@ -253,6 +293,16 @@ def cancel_invitation(invitation_id: str, user: User = Depends(get_current_user)
     return svc.cancel_invitation(db, actor_from(user), invitation_id)
 
 
+@router.post("/invitations/{invitation_id}/accept")
+def accept_invitation_id(invitation_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return svc.accept_invitation_id(db, actor_from(user), invitation_id)
+
+
+@router.post("/invitations/{invitation_id}/decline")
+def decline_invitation_id(invitation_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return svc.decline_invitation_id(db, actor_from(user), invitation_id)
+
+
 @router.get("/invitations/by-token/{token}")
 def invitation_by_token(token: str, db: Session = Depends(get_db)):
     return svc.public_invitation(db, token)
@@ -261,6 +311,11 @@ def invitation_by_token(token: str, db: Session = Depends(get_db)):
 @router.post("/invitations/by-token/{token}/accept")
 def accept_invitation(token: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return svc.accept_invitation_token(db, actor_from(user), token)
+
+
+@router.post("/invitations/by-token/{token}/decline")
+def decline_invitation(token: str, db: Session = Depends(get_db)):
+    return svc.decline_invitation_by_token_public(db, token)
 
 
 @router.get("/architect/clients")
@@ -276,3 +331,38 @@ def post_inquiry(body: InquiryCreate, db: Session = Depends(get_db)):
 @router.get("/inquiries")
 def get_inquiries(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return svc.list_inquiries(db, actor_from(user))
+
+
+@router.post("/architect-applications")
+def create_architect_application(body: ArchitectApplicationCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return svc.create_architect_application(db, actor_from(user), body.email, body.full_name, body.information)
+
+
+@router.get("/architect-applications")
+def list_architect_applications(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return svc.list_architect_applications(db, actor_from(user))
+
+
+@router.post("/architect-applications/{application_id}/approve")
+def approve_architect_application(application_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return svc.approve_architect_application(db, actor_from(user), application_id)
+
+
+@router.post("/architect-applications/{application_id}/reject")
+def reject_architect_application(application_id: str, body: ArchitectApplicationReject, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return svc.reject_architect_application(db, actor_from(user), application_id, body.reason)
+
+
+@router.get("/architect-applications/by-token/{token}")
+def architect_application_by_token(token: str, db: Session = Depends(get_db)):
+    return svc.public_architect_application(db, token)
+
+
+@router.post("/architect-applications/by-token/{token}/complete")
+def complete_architect_application(token: str, body: ArchitectApplicationComplete, db: Session = Depends(get_db)):
+    result = svc.complete_architect_application(db, token, body.password)
+    user = db.get(User, result["user"]["id"])
+    return {
+        "token": issue_session_token(user, body.password) if user else None,
+        "user": result["user"],
+    }

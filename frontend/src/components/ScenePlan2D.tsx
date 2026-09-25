@@ -117,10 +117,18 @@ export default function ScenePlan2D({
   const svgRef = useRef<SVGSVGElement>(null)
   const altRef = useRef(false)
   const [spaceHeld, setSpaceHeld] = useState(false)
+  const [editId, setEditId] = useState<string | null>(null)
+  const [editBody, setEditBody] = useState('')
   const [liveGuides, setLiveGuides] = useState<Array<{ x1: number; y1: number; x2: number; y2: number }>>([])
   const [cw, setCw] = useState(800)
   const [ch, setCh] = useState(600)
   const wrapRef = useRef<HTMLDivElement>(null)
+  const zoomRef = useRef(zoom)
+  const panRef = useRef(pan)
+  const onPanZoomRef = useRef(onPanZoom)
+  zoomRef.current = zoom
+  panRef.current = pan
+  onPanZoomRef.current = onPanZoom
   const [drawStart, setDrawStart] = useState<{ x: number; y: number } | null>(null)
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null)
 
@@ -154,6 +162,20 @@ export default function ScenePlan2D({
       window.removeEventListener('keyup', up)
     }
   }, [])
+
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      if (!onPanZoomRef.current) return
+      e.preventDefault()
+      const factor = e.deltaY > 0 ? 0.92 : 1.08
+      onPanZoomRef.current(Math.min(4, Math.max(0.4, zoomRef.current * factor)), panRef.current)
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [])
+
   const bounds = sceneBounds(scene)
   const baseS = Math.min((cw - MARGIN * 2) / bounds.w, (ch - MARGIN * 2) / bounds.h)
   const S = baseS * zoom
@@ -216,12 +238,6 @@ export default function ScenePlan2D({
       className="scene-plan-wrap"
       ref={wrapRef}
       style={{ width: '100%', height: '100%', position: 'relative' }}
-      onWheel={e => {
-        if (!onPanZoom) return
-        e.preventDefault()
-        const factor = e.deltaY > 0 ? 0.92 : 1.08
-        onPanZoom(Math.min(4, Math.max(0.4, zoom * factor)), pan)
-      }}
     >
       <svg
         ref={svgRef}
@@ -483,16 +499,34 @@ export default function ScenePlan2D({
             <div key={a.id} className="plan-note-card" style={{ left: px + 10, top: Math.max(8, py - 78) }}>
               <p className="plan-note-role">{commentRoleLabel(a.author_role)}</p>
               <p className="plan-note-author">{displayNameFromEmail(a.author_email || 'client')}</p>
-              <p className="plan-note-body">{a.body}</p>
-              {a.created_at && <p className="plan-note-meta">{formatDate(a.created_at)}</p>}
-              {mine && (
-                <div className="plan-note-actions">
-                  <button type="button" onClick={() => {
-                    const next = window.prompt('Edit comment', a.body)
-                    if (next?.trim()) onUpdateAnnotation?.(a.id, next.trim())
-                  }}>Edit</button>
-                  <button type="button" onClick={() => onDeleteAnnotation?.(a.id)}>Delete</button>
-                </div>
+              {editId === a.id ? (
+                <>
+                  <textarea
+                    className="plan-note-editor"
+                    value={editBody}
+                    onChange={e => setEditBody(e.target.value)}
+                    aria-label="Edit comment"
+                  />
+                  <div className="plan-note-actions">
+                    <button type="button" onClick={() => { setEditId(null); setEditBody('') }}>Cancel</button>
+                    <button type="button" onClick={() => {
+                      if (editBody.trim()) onUpdateAnnotation?.(a.id, editBody.trim())
+                      setEditId(null)
+                      setEditBody('')
+                    }}>Save</button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="plan-note-body">{a.body}</p>
+                  {a.created_at && <p className="plan-note-meta">{formatDate(a.created_at)}</p>}
+                  {mine && (
+                    <div className="plan-note-actions">
+                      <button type="button" onClick={() => { setEditId(a.id); setEditBody(a.body) }}>Edit</button>
+                      <button type="button" onClick={() => onDeleteAnnotation?.(a.id)}>Delete</button>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )

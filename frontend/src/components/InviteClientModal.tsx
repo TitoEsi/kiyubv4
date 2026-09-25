@@ -1,38 +1,36 @@
 import { FormEvent, useState } from 'react'
-import { inviteClient, Invitation, Project } from '../workflow/api'
+import { inviteClient, Invitation } from '../workflow/api'
 
 export default function InviteClientModal({
-  projects,
   onClose,
   onSent,
 }: {
-  projects: Project[]
   onClose: () => void
   onSent: (invite: Invitation) => void
 }) {
-  const [projectId, setProjectId] = useState(projects[0]?.id || '')
   const [email, setEmail] = useState('')
+  const [projectName, setProjectName] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [sent, setSent] = useState<Invitation | null>(null)
   const [loading, setLoading] = useState(false)
 
+  async function send(resend = false) {
+    return inviteClient(email, projectName.trim() || undefined, resend)
+  }
+
   async function onSubmit(e: FormEvent) {
     e.preventDefault()
-    if (!projectId) {
-      setError('Select a project')
-      return
-    }
     setLoading(true)
     setError(null)
     try {
-      const invite = await inviteClient(projectId, email)
+      const invite = await send(false)
       setSent(invite)
       onSent(invite)
     } catch (err: unknown) {
       const ax = err as { response?: { data?: { detail?: string }; status?: number } }
       if (ax.response?.status === 409) {
         try {
-          const invite = await inviteClient(projectId, email, true)
+          const invite = await send(true)
           setSent(invite)
           onSent(invite)
           return
@@ -57,8 +55,8 @@ export default function InviteClientModal({
         <h2 id="invite-title">Invite client</h2>
         {sent ? (
           <div className="studio-stack">
-            <p>Invitation is {sent.status.toLowerCase()} for {sent.email}.</p>
-            <p className="wf-hint">Share this link. KIYUB does not send email from this environment.</p>
+            <p>Invitation sent successfully.</p>
+            <p className="wf-hint">KIYUB emailed {sent.email}. The project appears after they complete their account. A backup link is available for development.</p>
             <label htmlFor="invite-link">Invite link</label>
             <input id="invite-link" readOnly value={href} />
             <div className="studio-toolbar">
@@ -75,13 +73,6 @@ export default function InviteClientModal({
         ) : (
           <form className="studio-stack" onSubmit={onSubmit}>
             {error && <div className="error-msg" role="alert">{error}</div>}
-            <label htmlFor="invite-project">Project</label>
-            <select id="invite-project" value={projectId} onChange={e => setProjectId(e.target.value)} required>
-              <option value="">Select project</option>
-              {projects.map(p => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
             <label htmlFor="invite-email">Client email</label>
             <input
               id="invite-email"
@@ -91,8 +82,15 @@ export default function InviteClientModal({
               placeholder="client@studio.local"
               required
             />
+            <label htmlFor="invite-name">Project name (optional)</label>
+            <input
+              id="invite-name"
+              value={projectName}
+              onChange={e => setProjectName(e.target.value)}
+              placeholder="Residence"
+            />
             <div className="studio-toolbar">
-              <button className="catalog-generate-btn" type="submit" disabled={loading || !projects.length}>
+              <button className="catalog-generate-btn" type="submit" disabled={loading}>
                 {loading ? 'Sending…' : 'Send invitation'}
               </button>
               <button type="button" className="back-btn" onClick={onClose}>Cancel</button>

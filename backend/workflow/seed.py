@@ -6,11 +6,10 @@ import json
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy.orm import Session
-
-from .auth import hash_password
+from .auth import provision_user
 from .generate import _stub_plan
 from .models import AICandidate, Comment, DesignDocument, Invitation, Project, Revision, User
+from .repositories.base import MemoryStore as Session
 from .scene import floor_plan_to_scene_document
 
 SEED_USERS = (
@@ -39,8 +38,7 @@ def seed_users(db: Session) -> list[User]:
     for email, password, role, approved in SEED_USERS:
         user = db.query(User).filter(User.email == email).one_or_none()
         if user is None:
-            user = User(email=email, password_hash=hash_password(password), role=role, approved=approved)
-            db.add(user)
+            user = provision_user(db, email, password, role, approved)
             created.append(user)
     db.commit()
     seed_collaboration(db)
@@ -89,21 +87,27 @@ def _ensure_accepted_invitation(db: Session, project: Project, architect: User, 
         .one_or_none()
     )
     if existing:
+        if not project.invitation_id:
+            project.invitation_id = existing.id
+            db.touch(project)
         return
     token = secrets.token_urlsafe(32)
-    db.add(
-        Invitation(
-            architect_id=architect.id,
-            project_id=project.id,
-            email=client.email,
-            status="ACCEPTED",
-            token_hash=_hash_invite_token(token),
-            expires_at=_now() + timedelta(days=7),
-            accepted_at=_now(),
-            accepted_user_id=client.id,
-        )
+    inv = Invitation(
+        architect_id=architect.id,
+        project_id=project.id,
+        project_name=project.name,
+        email=client.email,
+        status="ACCEPTED",
+        token_hash=_hash_invite_token(token),
+        expires_at=_now() + timedelta(days=7),
+        accepted_at=_now(),
+        accepted_user_id=client.id,
     )
+    db.add(inv)
     db.flush()
+    db.commit()
+    project.invitation_id = inv.id
+    db.touch(project)
 
 
 def _ensure_stub_floor_plan(db: Session, project: Project, client: User) -> None:

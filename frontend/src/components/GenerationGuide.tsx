@@ -3,7 +3,7 @@ import { useState } from 'react'
 const KEY = 'kiyub-client-guide-dismissed'
 
 const STEPS = [
-  { n: '01', t: 'Create a project', d: 'Your architect opens a project and assigns it to you.' },
+  { n: '01', t: 'Accept the invitation', d: 'Your architect invites you. Accepting creates the project.' },
   { n: '02', t: 'Describe your site', d: 'Enter lot shape, width, depth, and site requirements.' },
   { n: '03', t: 'Define your spaces', d: 'Choose the rooms and spaces you want in your home.' },
   { n: '04', t: 'Add your preferences', d: 'Specify floors, bedrooms, bathrooms, and circulation.' },

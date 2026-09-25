@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import GreetingBanner from '../components/GreetingBanner'
 import InviteClientModal from '../components/InviteClientModal'
+import StatCard from '../components/StatCard'
 import WorkflowShell from './WorkflowShell'
 import ProjectRegister from './ProjectRegister'
 import { listArchitectClients, listNotifications, listProjects, Notification, Project } from '../workflow/api'
@@ -31,58 +33,33 @@ export default function ArchitectHome() {
   }, [])
 
   const recent = useMemo(() => sortProjects(projects, 'updated').slice(0, 6), [projects])
-  const activity = notes.slice(0, 5)
 
   return (
-    <WorkflowShell title="Architect workspace">
+    <WorkflowShell>
       {error && <div className="error-msg" role="alert">{error}</div>}
       <div className="studio-home">
         <GreetingBanner lede="Ready to review your projects?" />
         <div className="studio-overview">
-          <div>
-            <p className="studio-meta">Projects</p>
-            <p className="studio-stat">{projects.length}</p>
-          </div>
-          <div>
-            <p className="studio-meta">Clients</p>
-            <p className="studio-stat">{clientCount}</p>
-          </div>
-          <div>
-            <p className="studio-meta">Pending invites</p>
-            <p className="studio-stat">{pendingInvites}</p>
-          </div>
-          <div>
-            <p className="studio-meta">Unread</p>
-            <p className="studio-stat">{notes.filter(n => !n.read).length}</p>
-          </div>
+          <StatCard label="Projects" value={projects.length} to="/architect/projects" />
+          <StatCard label="Clients" value={clientCount} to="/architect/clients" />
+          <StatCard label="Pending invites" value={pendingInvites} to="/architect/invitations" />
+          <StatCard label="Unread" value={notes.filter(n => !n.read).length} />
         </div>
         <div className="studio-toolbar">
           <button type="button" className="catalog-generate-btn" onClick={() => setInviteOpen(true)}>
             Invite client
           </button>
+          <Link className="wf-link" to="/architect/history">History</Link>
         </div>
-        {activity.length > 0 && (
-          <section className="studio-section">
-            <h2 className="studio-section-title">Recent activity</h2>
-            <ul className="studio-notes">
-              {activity.map(n => (
-                <li key={n.id} className="studio-note">
-                  <span>{n.message}</span>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
         <ProjectRegister
           projects={recent}
           notes={notes}
           architect
-          empty="Once you create a project, it will appear here."
+          empty="Invite a client. The project appears here after they accept."
         />
       </div>
       {inviteOpen && (
         <InviteClientModal
-          projects={projects}
           onClose={() => setInviteOpen(false)}
           onSent={() => { void refresh() }}
         />

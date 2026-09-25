@@ -35,6 +35,13 @@ KIYUB Editor
 
 ## Run locally
 
+Workflow persistence is **Supabase Postgres + Auth**. `/api` contracts, generation (MOE / HouseGAN++ / OR-Tools), and the editors are unchanged. Pytest uses an in-memory repository (no live Supabase).
+
+1. Create a Supabase project and enable the email Auth provider.
+2. Copy `.env.example` to `.env` and set `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`. Frontend needs `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` only. Never expose the service role.
+3. Apply schema: `supabase db push`, or paste **`supabase/migrations/`** into the SQL editor. Do not apply `backend/migrations/legacy/` (old SQLite/`users` drafts).
+4. Seed runs on backend startup (Auth Admin + demo projects) when service-role keys are set. `KIYUB_WORKFLOW_MEMORY=1` is pytest-only; uvicorn will refuse to start if it is set or if Supabase keys are missing.
+
 Frontend (Vite, default http://localhost:5173):
 
 ```powershell
@@ -50,10 +57,11 @@ cd backend
 .\.venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8002
 ```
 
-Optional:
+Optional one-shot import of a historical SQLite file (CLI only, never API startup; does not copy `password_hash`):
 
-```
-NEXT_PUBLIC_GENERATION_ENGINE_URL   (unused by this Vite app; API is proxied to 8002)
+```powershell
+cd backend
+.\.venv\Scripts\python.exe -m workflow.import_sqlite .\kiyub_workflow.db --password "ChangeMeNow!1"
 ```
 
 Ollama at `http://localhost:11434` is used for RAG embeddings and chat when those models are installed. Generation does not require Ollama if the embedding cache is already populated.

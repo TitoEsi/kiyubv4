@@ -16,6 +16,7 @@ class RegisterBody(BaseModel):
     password: str
     role: str = "CLIENT"
     invitation_token: str | None = None
+    full_name: str | None = None
 
 
 class ProjectCreate(BaseModel):
@@ -60,13 +61,20 @@ class WorkingDesignBody(BaseModel):
     scene_document: dict[str, Any]
 
 
+class SubmitReviewBody(BaseModel):
+    scene_document: dict[str, Any] | None = None
+    floor_plan: dict[str, Any] | None = None
+
+
 class AccountPatch(BaseModel):
     approved: bool | None = None
     role: str | None = None
+    suspended: bool | None = None
 
 
 class InvitationCreate(BaseModel):
     email: str
+    project_name: str | None = None
     resend: bool = False
 
 
@@ -74,3 +82,18 @@ class InquiryCreate(BaseModel):
     name: str
     email: str
     message: str
+
+
+class ArchitectApplicationCreate(BaseModel):
+    email: str
+    full_name: str
+    information: str | None = None
+
+
+class ArchitectApplicationReject(BaseModel):
+    reason: str | None = None
+
+
+class ArchitectApplicationComplete(BaseModel):
+    password: str
+    role: str | None = None

@@ -1,13 +1,10 @@
-"""Project workflow ORM. Geometry lives on revisions as SceneDocument + FloorPlan JSON."""
+"""Workflow entities. Persistence is MemoryStore or Supabase, not SQLAlchemy."""
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
-
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-
-from .db import Base
+from typing import Any
 
 
 def _uuid() -> str:
@@ -18,198 +15,237 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-class User(Base):
-    __tablename__ = "users"
+class FieldRef:
+    def __init__(self, model: type, name: str):
+        self.model = model
+        self.name = name
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
-    role: Mapped[str] = mapped_column(String(32), nullable=False)
-    approved: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    def __eq__(self, other: Any):
+        return ("eq", self.model, self.name, other)
 
-    projects_as_client = relationship("Project", back_populates="client", foreign_keys="Project.client_id")
-    projects_as_architect = relationship("Project", back_populates="architect", foreign_keys="Project.architect_id")
-    invitations_sent = relationship("Invitation", back_populates="architect", foreign_keys="Invitation.architect_id")
+    def __ne__(self, other: Any):
+        return ("ne", self.model, self.name, other)
 
+    def in_(self, values: Any):
+        return ("in", self.model, self.name, values)
 
-class Project(Base):
-    __tablename__ = "projects"
+    def isnot(self, other: Any):
+        return ("isnot", self.model, self.name, other)
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    client_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
-    architect_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
-    status: Mapped[str] = mapped_column(String(32), default="DRAFT", nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+    def desc(self):
+        return ("desc", self.model, self.name)
 
-    client = relationship("User", foreign_keys=[client_id], back_populates="projects_as_client")
-    architect = relationship("User", foreign_keys=[architect_id], back_populates="projects_as_architect")
-    brief = relationship("ClientBrief", back_populates="project", uselist=False)
-    documents = relationship("DesignDocument", back_populates="project")
-    candidates = relationship("AICandidate", back_populates="project")
-    jobs = relationship("GenerationJob", back_populates="project")
-    comments = relationship("Comment", back_populates="project")
-    approvals = relationship("Approval", back_populates="project")
-    invitations = relationship("Invitation", back_populates="project")
+    def asc(self):
+        return ("asc", self.model, self.name)
 
 
-class ClientBrief(Base):
-    __tablename__ = "client_briefs"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id"), unique=True, nullable=False)
-    questionnaire: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
-    specification: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
-
-    project = relationship("Project", back_populates="brief")
+def entity(cls: type) -> type:
+    cls = dataclass(cls)
+    for f in fields(cls):
+        setattr(cls, f.name, FieldRef(cls, f.name))
+    return cls
 
 
-class DesignDocument(Base):
-    __tablename__ = "design_documents"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id"), nullable=False)
-    stage: Mapped[str] = mapped_column(String(32), default="CLIENT_BRIEF", nullable=False)
-    current_revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    working_scene_document: Mapped[str | None] = mapped_column(Text, nullable=True)
-    working_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
-
-    project = relationship("Project", back_populates="documents")
-    revisions = relationship("Revision", back_populates="document")
-
-
-class Revision(Base):
-    __tablename__ = "revisions"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    design_document_id: Mapped[str] = mapped_column(String(36), ForeignKey("design_documents.id"), nullable=False)
-    version: Mapped[int] = mapped_column(Integer, nullable=False)
-    source_revision_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("revisions.id"), nullable=True)
-    scene_document: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
-    floor_plan: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
-    created_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    source_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-
-    document = relationship("DesignDocument", back_populates="revisions")
+@entity
+class User:
+    id: str = field(default_factory=_uuid)
+    email: str = ""
+    # MemoryStore/test login only. Supabase Auth owns passwords; never written to profiles.
+    password_hash: str = ""
+    role: str = "CLIENT"
+    approved: bool = True
+    suspended: bool = False
+    deleted_at: datetime | None = None
+    full_name: str | None = None
+    created_at: datetime = field(default_factory=_now)
+    updated_at: datetime = field(default_factory=_now)
 
 
-class AICandidate(Base):
-    __tablename__ = "ai_candidates"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id"), nullable=False)
-    generation_job_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("generation_jobs.id"), nullable=True)
-    revision_id: Mapped[str] = mapped_column(String(36), ForeignKey("revisions.id"), nullable=False)
-    selected_by_client: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-
-    project = relationship("Project", back_populates="candidates")
-    revision = relationship("Revision")
+@entity
+class Project:
+    id: str = field(default_factory=_uuid)
+    name: str = ""
+    client_id: str | None = None
+    architect_id: str | None = None
+    invitation_id: str | None = None
+    status: str = "DRAFT"
+    created_at: datetime = field(default_factory=_now)
+    updated_at: datetime = field(default_factory=_now)
 
 
-class GenerationJob(Base):
-    __tablename__ = "generation_jobs"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id"), nullable=False)
-    requested_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    source_revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    source_brief_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    specification: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default="PENDING", nullable=False)
-    result_candidate_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    project = relationship("Project", back_populates="jobs")
+@entity
+class ClientBrief:
+    id: str = field(default_factory=_uuid)
+    project_id: str = ""
+    questionnaire: str = "{}"
+    specification: str = "{}"
+    updated_at: datetime = field(default_factory=_now)
 
 
-class Comment(Base):
-    __tablename__ = "comments"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id"), nullable=False)
-    stage: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    revision_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("revisions.id"), nullable=True)
-    author_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    object_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    body: Mapped[str] = mapped_column(Text, nullable=False)
-    x: Mapped[float | None] = mapped_column(Float, nullable=True)
-    y: Mapped[float | None] = mapped_column(Float, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-
-    project = relationship("Project", back_populates="comments")
+@entity
+class SiteConstraint:
+    id: str = field(default_factory=_uuid)
+    project_id: str = ""
+    lot_shape: str | None = None
+    lot_width: float | None = None
+    lot_depth: float | None = None
+    created_at: datetime = field(default_factory=_now)
+    updated_at: datetime = field(default_factory=_now)
 
 
-class Approval(Base):
-    __tablename__ = "approvals"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id"), nullable=False)
-    revision_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("revisions.id"), nullable=True)
-    actor_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    kind: Mapped[str] = mapped_column(String(32), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-
-    project = relationship("Project", back_populates="approvals")
-
-
-class AuditEvent(Base):
-    __tablename__ = "audit_events"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    actor_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
-    project_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("projects.id"), nullable=True)
-    revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
-    target: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    metadata_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+@entity
+class DesignDocument:
+    id: str = field(default_factory=_uuid)
+    project_id: str = ""
+    stage: str = "CLIENT_BRIEF"
+    current_revision_id: str | None = None
+    working_scene_document: str | None = None
+    working_updated_at: datetime | None = None
+    created_at: datetime = field(default_factory=_now)
+    updated_at: datetime = field(default_factory=_now)
 
 
-class Notification(Base):
-    __tablename__ = "notifications"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    project_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("projects.id"), nullable=True)
-    kind: Mapped[str] = mapped_column(String(64), nullable=False)
-    message: Mapped[str] = mapped_column(Text, nullable=False)
-    read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-
-    __table_args__ = (UniqueConstraint("id", name="notifications_pk"),)
-
-
-class Invitation(Base):
-    __tablename__ = "invitations"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    architect_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id"), nullable=False)
-    email: Mapped[str] = mapped_column(String(255), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default="PENDING", nullable=False)
-    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    accepted_user_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
-
-    architect = relationship("User", foreign_keys=[architect_id], back_populates="invitations_sent")
-    project = relationship("Project", back_populates="invitations")
+@entity
+class Revision:
+    id: str = field(default_factory=_uuid)
+    design_document_id: str = ""
+    version: int = 1
+    source_revision_id: str | None = None
+    scene_document: str = "{}"
+    floor_plan: str = "{}"
+    created_by: str = ""
+    source_type: str = "AI_GENERATED"
+    created_at: datetime = field(default_factory=_now)
 
 
-class Inquiry(Base):
-    __tablename__ = "inquiries"
+@entity
+class AICandidate:
+    id: str = field(default_factory=_uuid)
+    project_id: str = ""
+    generation_job_id: str | None = None
+    revision_id: str = ""
+    selected_by_client: bool = False
+    created_at: datetime = field(default_factory=_now)
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    email: Mapped[str] = mapped_column(String(255), nullable=False)
-    message: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+@entity
+class GenerationJob:
+    id: str = field(default_factory=_uuid)
+    project_id: str = ""
+    requested_by: str = ""
+    source_revision_id: str | None = None
+    source_brief_id: str | None = None
+    specification: str = "{}"
+    status: str = "PENDING"
+    result_candidate_id: str | None = None
+    created_at: datetime = field(default_factory=_now)
+    completed_at: datetime | None = None
+
+
+@entity
+class Comment:
+    id: str = field(default_factory=_uuid)
+    project_id: str = ""
+    stage: str | None = None
+    revision_id: str | None = None
+    author_id: str = ""
+    object_id: str | None = None
+    body: str = ""
+    x: float | None = None
+    y: float | None = None
+    created_at: datetime = field(default_factory=_now)
+
+
+@entity
+class Approval:
+    id: str = field(default_factory=_uuid)
+    project_id: str = ""
+    revision_id: str | None = None
+    actor_id: str = ""
+    kind: str = ""
+    created_at: datetime = field(default_factory=_now)
+
+
+@entity
+class AuditEvent:
+    id: str = field(default_factory=_uuid)
+    actor_id: str | None = None
+    project_id: str | None = None
+    revision_id: str | None = None
+    event_type: str = ""
+    target: str | None = None
+    metadata_json: str = "{}"
+    created_at: datetime = field(default_factory=_now)
+
+
+@entity
+class Notification:
+    id: str = field(default_factory=_uuid)
+    user_id: str = ""
+    project_id: str | None = None
+    kind: str = ""
+    message: str = ""
+    read: bool = False
+    created_at: datetime = field(default_factory=_now)
+
+
+@entity
+class Invitation:
+    id: str = field(default_factory=_uuid)
+    architect_id: str = ""
+    project_id: str | None = None
+    project_name: str | None = None
+    email: str = ""
+    status: str = "PENDING"
+    token_hash: str = ""
+    expires_at: datetime = field(default_factory=_now)
+    created_at: datetime = field(default_factory=_now)
+    accepted_at: datetime | None = None
+    accepted_user_id: str | None = None
+    auth_user_id: str | None = None
+
+
+@entity
+class ArchitectApplication:
+    id: str = field(default_factory=_uuid)
+    email: str = ""
+    full_name: str = ""
+    information: str | None = None
+    status: str = "PENDING_APPROVAL"
+    invited_by: str = ""
+    reviewed_by: str | None = None
+    reviewed_at: datetime | None = None
+    rejection_reason: str | None = None
+    token_hash: str | None = None
+    expires_at: datetime | None = None
+    accepted_user_id: str | None = None
+    created_at: datetime = field(default_factory=_now)
+    updated_at: datetime = field(default_factory=_now)
+
+
+@entity
+class Inquiry:
+    id: str = field(default_factory=_uuid)
+    name: str = ""
+    email: str = ""
+    message: str = ""
+    created_at: datetime = field(default_factory=_now)
+
+
+TABLES = {
+    User: "profiles",
+    Project: "projects",
+    ClientBrief: "client_briefs",
+    SiteConstraint: "site_constraints",
+    DesignDocument: "design_documents",
+    Revision: "revisions",
+    AICandidate: "ai_candidates",
+    GenerationJob: "generation_jobs",
+    Comment: "comments",
+    Approval: "approvals",
+    AuditEvent: "audit_events",
+    Notification: "notifications",
+    Invitation: "invitations",
+    Inquiry: "inquiries",
+    ArchitectApplication: "architect_applications",
+}

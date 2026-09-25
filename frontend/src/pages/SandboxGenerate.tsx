@@ -10,13 +10,9 @@ import ConstraintForm from '../components/ConstraintForm'
 import FloorPlanGallery from '../components/FloorPlanGallery'
 import FloorPlanEditor from '../components/FloorPlanEditor'
 import WorkflowShell from './WorkflowShell'
-import { useAuth } from '../workflow/auth'
-import { roleHome } from '../workflow/paths'
 
 /** Original generate-and-edit sandbox. Workflow lives on routed pages. */
 export default function SandboxGenerate() {
-  const { user } = useAuth()
-  const home = roleHome(user?.role)
   const [questionnaire, setQuestionnaire] = useState<QuestionnaireData>(initialQuestionnaire)
   const [plans, setPlans] = useState<FloorPlan[]>([])
   const [selected, setSelected] = useState<FloorPlan | null>(null)
@@ -138,15 +134,7 @@ export default function SandboxGenerate() {
   }
 
   return (
-    <WorkflowShell
-      title="Scratch studio"
-      scratch
-      flush
-      crumbs={[
-        { label: user ? 'Projects' : 'Sign in', to: user ? home : '/login' },
-        { label: 'Scratch studio' },
-      ]}
-    >
+    <WorkflowShell scratch flush>
       <div className="wf-project">
         <aside className="wf-side">
           <ConstraintForm

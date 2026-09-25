@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState, ReactNode } from 'react'
 import { login as apiLogin, me, WorkflowUser } from './api'
+import { isSupabaseAuth, supabase } from '../lib/supabase'
 
 interface AuthState {
   user: WorkflowUser | null
@@ -12,44 +13,102 @@ interface AuthState {
 
 const AuthContext = createContext<AuthState | null>(null)
 
+function persistToken(token: string | null) {
+  if (token) localStorage.setItem('kiyub_token', token)
+  else localStorage.removeItem('kiyub_token')
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<WorkflowUser | null>(null)
   const [token, setToken] = useState<string | null>(localStorage.getItem('kiyub_token'))
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
-    if (!token) {
-      setReady(true)
-      return
+    let cancelled = false
+
+    async function hydrate(nextToken: string | null) {
+      if (!nextToken) {
+        if (!cancelled) {
+          setUser(null)
+          setReady(true)
+        }
+        return
+      }
+      try {
+        const profile = await me()
+        if (!cancelled) setUser(profile)
+      } catch {
+        persistToken(null)
+        if (!cancelled) {
+          setToken(null)
+          setUser(null)
+        }
+      } finally {
+        if (!cancelled) setReady(true)
+      }
     }
-    me()
-      .then(setUser)
-      .catch(() => {
-        localStorage.removeItem('kiyub_token')
-        setToken(null)
-        setUser(null)
+
+    if (isSupabaseAuth() && supabase) {
+      supabase.auth.getSession().then(({ data }) => {
+        const access = data.session?.access_token || null
+        if (access) {
+          persistToken(access)
+          setToken(access)
+        }
+        return hydrate(access || token)
       })
-      .finally(() => setReady(true))
-  }, [token])
+      const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+        const access = session?.access_token || null
+        persistToken(access)
+        setToken(access)
+        if (access) {
+          me().then(setUser).catch(() => setUser(null))
+        } else {
+          setUser(null)
+        }
+      })
+      return () => {
+        cancelled = true
+        sub.subscription.unsubscribe()
+      }
+    }
+
+    hydrate(token)
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const value = useMemo<AuthState>(() => ({
     user,
     token,
     ready,
     login: async (email, password) => {
+      if (isSupabaseAuth() && supabase) {
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+        if (error || !data.session) {
+          throw { response: { data: { detail: error?.message || 'Login failed' } } }
+        }
+        persistToken(data.session.access_token)
+        setToken(data.session.access_token)
+        const profile = await me()
+        setUser(profile)
+        return profile
+      }
       const data = await apiLogin(email, password)
-      localStorage.setItem('kiyub_token', data.token)
+      persistToken(data.token)
       setToken(data.token)
       setUser(data.user)
       return data.user
     },
     applySession: (nextToken, nextUser) => {
-      localStorage.setItem('kiyub_token', nextToken)
+      persistToken(nextToken)
       setToken(nextToken)
       setUser(nextUser)
     },
     logout: () => {
-      localStorage.removeItem('kiyub_token')
+      if (isSupabaseAuth() && supabase) void supabase.auth.signOut()
+      persistToken(null)
       setToken(null)
       setUser(null)
     },

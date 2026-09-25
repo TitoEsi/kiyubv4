@@ -2,13 +2,12 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import InviteClientModal from '../components/InviteClientModal'
 import WorkflowShell from './WorkflowShell'
-import { ArchitectClientRow, listArchitectClients, listProjects, Project } from '../workflow/api'
-import { displayNameFromEmail, formatRelative } from '../workflow/displayName'
+import { ArchitectClientRow, listArchitectClients } from '../workflow/api'
+import { displayNameFromEmail, formatDate, formatRelative } from '../workflow/displayName'
 import { ClientSort, filterAndSortClients } from '../workflow/projectQuery'
 
 export default function ArchitectClients() {
   const [rows, setRows] = useState<ArchitectClientRow[]>([])
-  const [projects, setProjects] = useState<Project[]>([])
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<ClientSort>('name-asc')
   const [error, setError] = useState<string | null>(null)
@@ -16,7 +15,6 @@ export default function ArchitectClients() {
 
   async function refresh() {
     setRows(await listArchitectClients())
-    setProjects(await listProjects())
   }
 
   useEffect(() => {
@@ -26,7 +24,7 @@ export default function ArchitectClients() {
   const visible = useMemo(() => filterAndSortClients(rows, query, sort), [rows, query, sort])
 
   return (
-    <WorkflowShell title="Clients">
+    <WorkflowShell>
       {error && <div className="error-msg" role="alert">{error}</div>}
       <div className="studio-home">
         <header className="studio-page-head">
@@ -78,22 +76,26 @@ export default function ArchitectClients() {
                 <tr>
                   <th>Client</th>
                   <th>Email</th>
+                  <th>Assigned architect</th>
                   <th>Project</th>
-                  <th>Invitation</th>
-                  <th>Project status</th>
+                  <th>Status</th>
+                  <th>Joined</th>
                   <th>Last activity</th>
                 </tr>
               </thead>
               <tbody>
                 {visible.map(row => (
-                  <tr key={`${row.project_id}-${row.email}-${row.invitation_id || 'assigned'}`}>
-                    <td>{displayNameFromEmail(row.email)}</td>
+                  <tr key={`${row.project_id || 'pending'}-${row.email}-${row.invitation_id || 'assigned'}`}>
+                    <td>{row.full_name || displayNameFromEmail(row.email)}</td>
                     <td>{row.email}</td>
+                    <td>{row.architect_email || '—'}</td>
                     <td>
-                      <Link to={`/projects/${row.project_id}`}>{row.project_name}</Link>
+                      {row.project_id
+                        ? <Link to={`/projects/${row.project_id}`}>{row.project_name || 'Open project'}</Link>
+                        : (row.project_name || '—')}
                     </td>
-                    <td>{row.invitation_status ? row.invitation_status.replace(/_/g, ' ') : 'Assigned'}</td>
-                    <td>{row.project_status.replace(/_/g, ' ')}</td>
+                    <td>{row.invitation_status ? row.invitation_status.replace(/_/g, ' ') : (row.project_status || 'Assigned')}</td>
+                    <td>{formatDate(row.created_at) || '—'}</td>
                     <td>{formatRelative(row.last_activity)?.replace(/^Updated /, '') || '—'}</td>
                   </tr>
                 ))}
@@ -104,7 +106,6 @@ export default function ArchitectClients() {
       </div>
       {inviteOpen && (
         <InviteClientModal
-          projects={projects}
           onClose={() => setInviteOpen(false)}
           onSent={() => { void refresh() }}
         />

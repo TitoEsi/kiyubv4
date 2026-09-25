@@ -4,9 +4,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from sqlalchemy.orm import Session
-
 from .models import AuditEvent, Notification, Project, User
+from .repositories.base import MemoryStore as Session
 
 
 def log_event(

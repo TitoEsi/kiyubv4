@@ -10,7 +10,7 @@ import { getProject, Notification, Project } from '../workflow/api'
 export default function ProjectRegister({
   projects,
   notes = [],
-  empty = 'No projects yet. They appear here when your architect assigns a project to you.',
+  empty = 'No projects yet. They appear here when you accept an architect invitation.',
   emptyTitle = 'No projects yet',
   architect = false,
   loading = false,
@@ -107,11 +107,11 @@ export default function ProjectRegister({
                 </div>
                 <div className="studio-tile-copy">
                   <h3 className="studio-tile-name">{p.name}</h3>
-                  {architect && <p className="studio-tile-meta">Client: {clientLabel}</p>}
+                  <p className="studio-tile-meta">Client: {clientLabel}</p>
                   {architect && <p className="studio-tile-meta">Floor plan: {floorPlanLabel(p)}</p>}
                   {commentLine && <p className="studio-tile-meta">{commentLine}</p>}
                   <p className="studio-row-status">{p.status.replace(/_/g, ' ')}</p>
-                  {created && architect && <p className="studio-tile-meta">Created {created}</p>}
+                  {created && <p className="studio-tile-meta">Created {created}</p>}
                   {updated && <p className="studio-tile-meta">{updated}</p>}
                   {activity && <p className="studio-row-activity">{activity.message}</p>}
                   <Link className="studio-tile-open" to={`/projects/${p.id}`}>Open project</Link>

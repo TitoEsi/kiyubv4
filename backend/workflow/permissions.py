@@ -16,6 +16,7 @@ class Actor:
     id: str
     role: str
     approved: bool = True
+    suspended: bool = False
 
 
 def _assigned(actor: Actor, project: dict) -> bool:
@@ -115,7 +116,7 @@ def can_manage_accounts(actor: Actor) -> bool:
 
 
 def can_view_audit(actor: Actor) -> bool:
-    return actor.role in (MAIN_ADMIN, IT_PERSONNEL, ARCHITECT)
+    return actor.role in (MAIN_ADMIN, IT_PERSONNEL, ARCHITECT, CLIENT)
 
 
 def can_update_brief(actor: Actor, project: dict) -> bool:
@@ -133,14 +134,14 @@ def can_accept_candidate(actor: Actor, project: dict) -> bool:
 
 
 def can_create_project(actor: Actor) -> bool:
-    return actor.role in (ARCHITECT, MAIN_ADMIN) and (actor.role != ARCHITECT or actor.approved)
+    return actor.role == MAIN_ADMIN
 
 
 def can_submit_review(actor: Actor, project: dict) -> bool:
+    if actor.role == ARCHITECT and actor.approved and project.get("architect_id") == actor.id:
+        return project.get("status") in ("IN_PROGRESS", "FOR_CHECKING")
     if project.get("status") != "IN_PROGRESS":
         return False
-    if actor.role == ARCHITECT and actor.approved and project.get("architect_id") == actor.id:
-        return True
     if actor.role == CLIENT and project.get("client_id") == actor.id and project.get("has_floor_plan"):
         return True
     return False

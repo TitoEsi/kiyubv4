@@ -22,6 +22,10 @@ export interface WorkflowUser {
   email: string
   role: 'CLIENT' | 'ARCHITECT' | 'MAIN_ADMIN' | 'IT_PERSONNEL'
   approved: boolean
+  suspended?: boolean
+  deleted_at?: string | null
+  full_name?: string | null
+  created_at?: string | null
 }
 
 export interface Project {
@@ -29,6 +33,7 @@ export interface Project {
   name: string
   client_id: string | null
   architect_id: string | null
+  invitation_id?: string | null
   status: string
   created_at?: string | null
   updated_at?: string | null
@@ -80,10 +85,12 @@ export interface Notification {
 
 export interface Invitation {
   id: string
-  project_id: string
+  project_id: string | null
+  project_name?: string | null
   architect_id: string
+  architect_email?: string | null
   email: string
-  status: 'PENDING' | 'ACCEPTED' | 'EXPIRED' | 'CANCELLED' | string
+  status: 'PENDING' | 'ACCEPTED' | 'EXPIRED' | 'CANCELLED' | 'DECLINED' | string
   expires_at?: string | null
   created_at?: string | null
   accepted_at?: string | null
@@ -94,14 +101,28 @@ export interface Invitation {
 
 export interface ArchitectClientRow {
   email: string
+  full_name?: string | null
   user_id: string | null
-  project_id: string
-  project_name: string
+  architect_id?: string | null
+  architect_email?: string | null
+  project_id: string | null
+  project_name: string | null
   invitation_status: string | null
-  project_status: string
+  project_status: string | null
   last_activity: string | null
   created_at: string | null
   invitation_id: string | null
+}
+
+export interface AuditEvent {
+  id: string
+  event_type: string
+  actor_id?: string | null
+  actor_email?: string | null
+  project_id?: string | null
+  target?: string | null
+  metadata?: Record<string, unknown>
+  created_at: string | null
 }
 
 export async function login(email: string, password: string) {
@@ -109,9 +130,14 @@ export async function login(email: string, password: string) {
   return data as { token: string; user: WorkflowUser }
 }
 
-export async function signup(email: string, password: string, role: string, invitation_token?: string) {
-  const { data } = await api.post('/auth/signup', { email, password, role, invitation_token })
-  return data as { token?: string; user: WorkflowUser; message?: string }
+export async function signup(email: string, password: string, role: string, invitation_token?: string, full_name?: string) {
+  const { data } = await api.post('/auth/signup', { email, password, role, invitation_token, full_name })
+  return data as { token?: string; user: WorkflowUser; message?: string; project?: Project | null }
+}
+
+export async function completeClientAccount(email: string, password: string, invitation_token: string, full_name: string) {
+  const { data } = await api.post('/auth/signup', { email, password, invitation_token, full_name })
+  return data as { token?: string; user: WorkflowUser; project?: Project | null }
 }
 
 export async function me() {
@@ -141,6 +167,7 @@ export async function getProject(id: string) {
       working_updated_at?: string | null
     }
     current_revision: Revision | null
+    submitted_revision?: Revision | null
     invitation?: Invitation | null
     permissions: Record<string, boolean>
   }
@@ -242,9 +269,12 @@ export async function deleteComment(projectId: string, commentId: string) {
   await api.delete(`/projects/${projectId}/comments/${commentId}`)
 }
 
-export async function submitReview(id: string) {
-  const { data } = await api.post(`/projects/${id}/submit-review`)
-  return data as Project
+export async function submitReview(
+  id: string,
+  payload?: { scene_document?: unknown; floor_plan?: unknown },
+) {
+  const { data } = await api.post(`/projects/${id}/submit-review`, payload || {})
+  return data as Project & { submitted_revision_id?: string; version?: number }
 }
 
 export async function requestRevision(id: string) {
@@ -281,9 +311,14 @@ export async function markNotificationRead(id: string) {
   await api.post(`/notifications/${id}/read`)
 }
 
+export async function markAllNotificationsRead() {
+  const { data } = await api.post('/notifications/read-all')
+  return data as { ok: boolean; count: number }
+}
+
 export async function listAudit(projectId?: string) {
   const { data } = await api.get('/audit', { params: projectId ? { project_id: projectId } : undefined })
-  return data as Array<{ id: string; event_type: string; created_at: string | null; metadata: Record<string, unknown> }>
+  return data as AuditEvent[]
 }
 
 export async function listAccounts() {
@@ -291,14 +326,24 @@ export async function listAccounts() {
   return data as WorkflowUser[]
 }
 
-export async function patchAccount(userId: string, patch: { approved?: boolean; role?: string }) {
+export async function patchAccount(userId: string, patch: { approved?: boolean; role?: string; suspended?: boolean }) {
   const { data } = await api.patch(`/accounts/${userId}`, patch)
   return data as WorkflowUser
 }
 
-export async function inviteClient(projectId: string, email: string, resend = false) {
-  const { data } = await api.post(`/projects/${projectId}/invitations`, { email, resend })
+export async function deleteAccount(userId: string) {
+  const { data } = await api.delete(`/accounts/${userId}`)
+  return data as WorkflowUser
+}
+
+export async function inviteClient(email: string, projectName?: string, resend = false) {
+  const { data } = await api.post('/invitations', { email, project_name: projectName, resend })
   return data as Invitation
+}
+
+export async function listInvitations() {
+  const { data } = await api.get('/invitations')
+  return data as Invitation[]
 }
 
 export async function listProjectInvitations(projectId: string) {
@@ -327,6 +372,21 @@ export async function acceptInvitation(token: string) {
   return data as { invitation: Invitation; project: Project | null }
 }
 
+export async function acceptInvitationById(id: string) {
+  const { data } = await api.post(`/invitations/${id}/accept`)
+  return data as { invitation: Invitation; project: Project | null }
+}
+
+export async function declineInvitation(token: string) {
+  const { data } = await api.post(`/invitations/by-token/${token}/decline`)
+  return data as Invitation
+}
+
+export async function declineInvitationById(id: string) {
+  const { data } = await api.post(`/invitations/${id}/decline`)
+  return data as Invitation
+}
+
 export async function listArchitectClients() {
   const { data } = await api.get('/architect/clients')
   return data as ArchitectClientRow[]
@@ -348,4 +408,56 @@ export async function submitInquiry(payload: { name: string; email: string; mess
 export async function listInquiries() {
   const { data } = await api.get('/inquiries')
   return data as Inquiry[]
+}
+
+export interface ArchitectApplication {
+  id: string
+  email: string
+  full_name: string
+  information: string | null
+  status: string
+  invited_by: string
+  reviewed_by: string | null
+  reviewed_at: string | null
+  rejection_reason: string | null
+  expires_at: string | null
+  accepted_user_id: string | null
+  created_at: string | null
+  token?: string
+  invite_url?: string
+  email_sent?: boolean
+}
+
+export async function createArchitectApplication(email: string, fullName: string, information?: string) {
+  const { data } = await api.post('/architect-applications', {
+    email,
+    full_name: fullName,
+    information,
+  })
+  return data as ArchitectApplication
+}
+
+export async function listArchitectApplications() {
+  const { data } = await api.get('/architect-applications')
+  return data as ArchitectApplication[]
+}
+
+export async function approveArchitectApplication(id: string) {
+  const { data } = await api.post(`/architect-applications/${id}/approve`)
+  return data as ArchitectApplication
+}
+
+export async function rejectArchitectApplication(id: string, reason?: string) {
+  const { data } = await api.post(`/architect-applications/${id}/reject`, { reason })
+  return data as ArchitectApplication
+}
+
+export async function getArchitectApplicationByToken(token: string) {
+  const { data } = await api.get(`/architect-applications/by-token/${token}`)
+  return data as { email: string; full_name: string; status: string; expires_at: string | null }
+}
+
+export async function completeArchitectApplication(token: string, password: string) {
+  const { data } = await api.post(`/architect-applications/by-token/${token}/complete`, { password })
+  return data as { token?: string; user: WorkflowUser }
 }

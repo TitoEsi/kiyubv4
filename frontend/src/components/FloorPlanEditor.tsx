@@ -11,6 +11,7 @@ import {
   Path,
 } from '@phosphor-icons/react'
 import { FloorPlan, Room } from '../types/floorplan'
+import type { SceneDocument } from '../scene-graph/types'
 import View3D from './View3D'
 import RoomInteriorView from './RoomInteriorView'
 import ElevationView from './ElevationView'
@@ -41,6 +42,7 @@ interface Props {
   onMoveAnnotation?: (id: string, x: number, y: number) => void
   selectedAnnotationId?: string | null
   onSelectAnnotation?: (id: string | null) => void
+  existingScene?: SceneDocument | null
 }
 
 type MainTab = 'plan' | 'elevations' | 'spec' | 'cost' | 'score' | 'chat'
@@ -69,6 +71,7 @@ export default function FloorPlanEditor({
   onAddAnnotation, onUpdateAnnotation, onDeleteAnnotation, onMoveAnnotation,
   selectedAnnotationId: selectedAnnotationIdProp,
   onSelectAnnotation: onSelectAnnotationProp,
+  existingScene,
 }: Props) {
   const [tab, setTab] = useState<MainTab>('plan')
   const [viewMode, setViewMode] = useState<ViewMode>('2d')
@@ -80,7 +83,10 @@ export default function FloorPlanEditor({
   const [internalAnnotationId, setInternalAnnotationId] = useState<string | null>(null)
   const [zoom, setZoom] = useState(1)
   const [pan, setPan] = useState({ x: 0, y: 0 })
-  const liveScene = useMemo(() => loadLiveScene(plan, undefined, { projectId }), [plan, projectId])
+  const liveScene = useMemo(
+    () => loadLiveScene(plan, undefined, { projectId, existing: existingScene }),
+    [plan, projectId, existingScene],
+  )
   const selectedAnnotationId = selectedAnnotationIdProp ?? internalAnnotationId
   const [draft, setDraft] = useState<{ x: number; y: number; object_id: string | null; body: string } | null>(null)
   const [exportError, setExportError] = useState<string | null>(null)

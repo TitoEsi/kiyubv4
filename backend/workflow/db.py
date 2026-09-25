@@ -1,46 +1,51 @@
-"""Workflow database session. SQLite by default; DATABASE_URL may point at Postgres."""
+"""Workflow session factory. MemoryStore in tests; Supabase when configured."""
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
-from sqlalchemy import create_engine, event
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
-from sqlalchemy.pool import StaticPool
+from .repositories.base import MemoryStore
 
-DB_PATH = Path(__file__).resolve().parent.parent / "kiyub_workflow.db"
-DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{DB_PATH}")
-
-engine = None
 SessionLocal = None
+_memory: MemoryStore | None = None
+_force_memory = False
 
 
-class Base(DeclarativeBase):
-    pass
+def supabase_enabled() -> bool:
+    if os.environ.get("KIYUB_WORKFLOW_MEMORY") == "1":
+        return False
+    return bool(os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_SERVICE_ROLE_KEY"))
 
 
-def _attach_sqlite_fk(eng) -> None:
-    if not str(eng.url).startswith("sqlite"):
-        return
-
-    @event.listens_for(eng, "connect")
-    def _fk_pragma(dbapi_conn, _rec):
-        cursor = dbapi_conn.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
+def require_supabase_runtime() -> None:
+    """Refuse API startup on MemoryStore. Tests use KIYUB_WORKFLOW_MEMORY or reset_store()."""
+    if os.environ.get("KIYUB_WORKFLOW_MEMORY") == "1":
+        raise RuntimeError(
+            "KIYUB_WORKFLOW_MEMORY=1 is test-only. Unset it to run the API against Supabase."
+        )
+    url = os.environ.get("SUPABASE_URL", "").strip()
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    if not url or not key:
+        raise RuntimeError(
+            "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required. "
+            "The API will not start with in-memory persistence."
+        )
 
 
 def configure(url: str | None = None) -> None:
-    global engine, SessionLocal, DATABASE_URL
-    DATABASE_URL = url or os.environ.get("DATABASE_URL", f"sqlite:///{DB_PATH}")
-    kwargs: dict = {"future": True}
-    if DATABASE_URL.startswith("sqlite"):
-        kwargs["connect_args"] = {"check_same_thread": False}
-        if ":memory:" in DATABASE_URL:
-            kwargs["poolclass"] = StaticPool
-    engine = create_engine(DATABASE_URL, **kwargs)
-    _attach_sqlite_fk(engine)
-    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    """Reset the in-memory store. Pass a url (e.g. 'memory') to force MemoryStore."""
+    global SessionLocal, _memory, _force_memory
+    _force_memory = url is not None
+    _memory = MemoryStore()
+
+    def _session() -> MemoryStore:
+        if not _force_memory and supabase_enabled():
+            from .repositories.supabase_store import SupabaseStore
+
+            return SupabaseStore()
+        assert _memory is not None
+        return _memory
+
+    SessionLocal = _session
 
 
 configure()
@@ -55,37 +60,10 @@ def get_db():
 
 
 def init_db() -> None:
-    from . import models  # noqa: F401
-    Base.metadata.create_all(bind=engine)
-    _ensure_comment_xy()
-    _ensure_working_scene()
+    """Schema lives in supabase/migrations/. Memory store is already empty."""
+    if _memory is None:
+        configure()
 
 
-def _ensure_comment_xy() -> None:
-    from sqlalchemy import inspect, text
-    if engine is None:
-        return
-    insp = inspect(engine)
-    if "comments" not in insp.get_table_names():
-        return
-    cols = {c["name"] for c in insp.get_columns("comments")}
-    with engine.begin() as conn:
-        if "x" not in cols:
-            conn.execute(text("ALTER TABLE comments ADD COLUMN x FLOAT"))
-        if "y" not in cols:
-            conn.execute(text("ALTER TABLE comments ADD COLUMN y FLOAT"))
-
-
-def _ensure_working_scene() -> None:
-    from sqlalchemy import inspect, text
-    if engine is None:
-        return
-    insp = inspect(engine)
-    if "design_documents" not in insp.get_table_names():
-        return
-    cols = {c["name"] for c in insp.get_columns("design_documents")}
-    with engine.begin() as conn:
-        if "working_scene_document" not in cols:
-            conn.execute(text("ALTER TABLE design_documents ADD COLUMN working_scene_document TEXT"))
-        if "working_updated_at" not in cols:
-            conn.execute(text("ALTER TABLE design_documents ADD COLUMN working_updated_at DATETIME"))
+def reset_store() -> None:
+    configure("memory")
