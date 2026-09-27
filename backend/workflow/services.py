@@ -755,9 +755,23 @@ def architect_approve(db: Session, actor: Actor, project_id: str) -> Project:
     if client_ok is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Client approval is required before architect approval")
     doc = _document(db, project)
-    db.add(Approval(project_id=project.id, revision_id=doc.current_revision_id, actor_id=actor.id, kind="ARCHITECT_APPROVED"))
+    review = _latest_review_revision(db, doc)
+    if review is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "No submitted review is available for approval")
+    client_ok = (
+        db.query(Approval)
+        .filter(
+            Approval.project_id == project.id,
+            Approval.kind == "CLIENT_APPROVED",
+            Approval.revision_id == review.id,
+        )
+        .first()
+    )
+    if client_ok is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Client approval is required for the current submitted review")
+    db.add(Approval(project_id=project.id, revision_id=review.id, actor_id=actor.id, kind="ARCHITECT_APPROVED"))
     _set_status(db, project, "APPROVED", actor.id)
-    log_event(db, event_type="ARCHITECT_APPROVED", actor_id=actor.id, project_id=project.id, revision_id=doc.current_revision_id)
+    log_event(db, event_type="ARCHITECT_APPROVED", actor_id=actor.id, project_id=project.id, revision_id=review.id)
     notify(db, project.client_id, "ARCHITECT_APPROVED", f"Architect approved {project.name}", project.id)
     db.commit()
     db.refresh(project)
