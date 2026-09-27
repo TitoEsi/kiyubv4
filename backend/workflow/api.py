@@ -218,8 +218,19 @@ def architect_approve(project_id: str, user: User = Depends(get_current_user), d
 
 
 @router.post("/projects/{project_id}/publish")
-def publish(project_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    rev = svc.publish_project(db, actor_from(user), project_id)
+def publish(
+    project_id: str,
+    body: PublishBody | None = Body(default=None),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    rev = svc.publish_project(
+        db,
+        actor_from(user),
+        project_id,
+        scene_document=body.scene_document if body else None,
+        floor_plan=body.floor_plan if body else None,
+    )
     return svc.serialize_revision(rev, current_id=rev.id, include_payload=True)
 
 
