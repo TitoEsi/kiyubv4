@@ -792,8 +792,15 @@ def publish_project(
     if source is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No design available to publish")
 
-    source_floor_plan = floor_plan if isinstance(floor_plan, dict) else _loads(source.floor_plan)
-    source_scene = scene_document if _is_scene_document(scene_document) else _loads(source.scene_document)
+    # Once the project is APPROVED, the persisted REVIEW snapshot is the
+    # authoritative design that both parties approved. Do not let a stale
+    # frontend payload override that approved revision.
+    if review is not None:
+        source_floor_plan = _loads(review.floor_plan)
+        source_scene = _loads(review.scene_document)
+    else:
+        source_floor_plan = floor_plan if isinstance(floor_plan, dict) else _loads(source.floor_plan)
+        source_scene = scene_document if _is_scene_document(scene_document) else _loads(source.scene_document)
 
     if not _is_scene_document(source_scene):
         raise HTTPException(status.HTTP_409_CONFLICT, "The design being published has no valid SceneDocument")
