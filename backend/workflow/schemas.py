@@ -65,6 +65,11 @@ class SubmitReviewBody(BaseModel):
     scene_document: dict[str, Any] | None = None
     floor_plan: dict[str, Any] | None = None
 
+    
+class PublishBody(BaseModel):
+    scene_document: dict[str, Any] | None = None
+    floor_plan: dict[str, Any] | None = None
+
 
 class AccountPatch(BaseModel):
     approved: bool | None = None
