@@ -309,7 +309,11 @@ export default function ProjectPage() {
     sceneSourceRef.current = key
     const loaded = loadLiveScene(plan, undefined, {
       projectId,
-      existing: isArchitect && currentPlan ? workingCopyRef.current : submittedScene,
+      // During editing prefer the working copy; after publication the working
+      // copy is cleared, so fall back to the published current SceneDocument.
+      existing: isArchitect && currentPlan
+        ? (workingCopyRef.current || submittedScene)
+        : submittedScene,
     })
     setScene(loaded)
     setWorkingSaved(!!(isArchitect && currentPlan && workingCopyRef.current))
