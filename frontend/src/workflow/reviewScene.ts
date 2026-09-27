@@ -29,7 +29,7 @@ export function clientVisibleScene(detail: ReviewDetail): {
   // REVIEW is only the visible source while the project is actually awaiting
   // checking. Once approved/published, the formal current revision is the source
   // of truth and the old REVIEW snapshot must not override it.
-  if (detail.project?.status === 'FOR_CHECKING') {
+  if (detail.project?.status === 'FOR_CHECKING' || detail.project?.status === 'APPROVED') {
     const submitted = detail.submitted_revision
     if (submitted && isSceneDocument(submitted.scene_document)) {
       return {
