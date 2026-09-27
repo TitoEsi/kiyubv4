@@ -24,6 +24,7 @@ from .schemas import (
     ProjectCreate,
     RegisterBody,
     SubmitReviewBody,
+    PublishBody,
     WorkingDesignBody,
 )
 from . import services as svc
