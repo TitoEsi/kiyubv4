@@ -747,13 +747,6 @@ def architect_approve(db: Session, actor: Actor, project_id: str) -> Project:
     project = _require_view(db, actor, project_id)
     if not perm.can_approve(actor, project_as_dict(project)) or actor.role != "ARCHITECT":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Architect cannot approve in this state")
-    client_ok = (
-        db.query(Approval)
-        .filter(Approval.project_id == project.id, Approval.kind == "CLIENT_APPROVED")
-        .first()
-    )
-    if client_ok is None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Client approval is required before architect approval")
     doc = _document(db, project)
     review = _latest_review_revision(db, doc)
     if review is None:
