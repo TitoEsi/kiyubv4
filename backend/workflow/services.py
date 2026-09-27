@@ -786,8 +786,7 @@ def publish_project(
     current = db.get(Revision, doc.current_revision_id) if doc.current_revision_id else None
     review = _latest_review_revision(db, doc)
 
-    # APPROVED follows the review that was actually shown and approved. Prefer
-    # the caller's live SceneDocument, then the persisted REVIEW snapshot.
+    # APPROVED follows the review that was actually shown and approved.
     source = review or current
     if source is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No design available to publish")
