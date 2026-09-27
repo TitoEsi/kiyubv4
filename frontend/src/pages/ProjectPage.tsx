@@ -114,7 +114,10 @@ export default function ProjectPage() {
     setProject(detail.project)
     setStage(detail.document.stage)
     setCurrentRevisionId(detail.document.current_revision_id)
-    const visible = clientVisibleScene(detail)
+    const visible = clientVisibleScene({
+      ...detail,
+      project: detail.project,
+    })
     setSubmittedScene(visible.scene)
     setSubmittedRevisionId(visible.revisionId)
     if (visible.floorPlan) {
