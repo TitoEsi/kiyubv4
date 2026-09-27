@@ -422,7 +422,29 @@ export default function ProjectPage() {
               <button type="button" className="catalog-generate-btn" onClick={async () => { await architectApprove(projectId!); await refresh() }}>Architect approve</button>
             )}
             {isArchitect && project?.status === 'APPROVED' && (
-              <button type="button" className="catalog-generate-btn" onClick={async () => { await publishProject(projectId!); await refresh() }}>Publish</button>
+              <button
+                type="button"
+                className="catalog-generate-btn"
+                onClick={async () => {
+                  if (!projectId) return
+                  try {
+                    // Publish the exact scene currently shown in the editor.
+                    // At APPROVED, this should be the same SceneDocument that was reviewed.
+                    const publishScene = scene
+                    const publishPlan = publishScene ? sceneDocumentToFloorPlan(publishScene) : currentPlan || undefined
+                    await publishProject(projectId, {
+                      scene_document: publishScene || undefined,
+                      floor_plan: publishPlan,
+                    })
+                    await refresh()
+                  } catch (err: unknown) {
+                    const ax = err as { response?: { data?: { detail?: string } } }
+                    setError(ax.response?.data?.detail || 'Could not publish the floor plan.')
+                  }
+                }}
+              >
+                Publish
+              </button>
             )}
             <Link className="back-btn" to={home}>Back to projects</Link>
           </div>
