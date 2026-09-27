@@ -731,9 +731,12 @@ def client_approve(db: Session, actor: Actor, project_id: str) -> Approval:
     if not perm.can_approve(actor, project_as_dict(project)) or actor.role != "CLIENT":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Client cannot approve in this state")
     doc = _document(db, project)
-    approval = Approval(project_id=project.id, revision_id=doc.current_revision_id, actor_id=actor.id, kind="CLIENT_APPROVED")
+    review = _latest_review_revision(db, doc)
+    if review is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "No submitted review is available for approval")
+    approval = Approval(project_id=project.id, revision_id=review.id, actor_id=actor.id, kind="CLIENT_APPROVED")
     db.add(approval)
-    log_event(db, event_type="CLIENT_APPROVED", actor_id=actor.id, project_id=project.id, revision_id=doc.current_revision_id)
+    log_event(db, event_type="CLIENT_APPROVED", actor_id=actor.id, project_id=project.id, revision_id=review.id)
     notify(db, project.architect_id, "CLIENT_APPROVED", f"Client approved {project.name}", project.id)
     db.commit()
     db.refresh(approval)
