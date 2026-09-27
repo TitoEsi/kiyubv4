@@ -373,17 +373,32 @@ def test_approve_and_publish(client):
     h_arch = auth(ctx["tokens"]["architect"]["token"])
     h_cli = auth(ctx["tokens"]["client"]["token"])
     client.post(f"/api/projects/{pid}/candidates/{gen['candidates'][0]['id']}/accept", headers=h_arch)
-    post_architect_review(client, pid, h_arch)
-    assert client.post(f"/api/projects/{pid}/client-approve", headers=h_cli).status_code == 200
+
+    reviewed_scene = review_scene("PUBLISHED-CURRENT", x=4.5)
+    reviewed = post_architect_review(client, pid, h_arch, reviewed_scene)
+    assert reviewed.status_code == 200, reviewed.text
+    reviewed_id = reviewed.json()["submitted_revision_id"]
+
+    approved = client.post(f"/api/projects/{pid}/client-approve", headers=h_cli)
+    assert approved.status_code == 200, approved.text
     r = client.post(f"/api/projects/{pid}/architect-approve", headers=h_arch)
     assert r.status_code == 200
     assert r.json()["status"] == "APPROVED"
+
     pub = client.post(f"/api/projects/{pid}/publish", headers=h_arch)
-    assert pub.status_code == 200
-    assert pub.json()["source_type"] == "PUBLISHED"
+    assert pub.status_code == 200, pub.text
+    published = pub.json()
+    assert published["source_type"] == "PUBLISHED"
+    assert published["source_revision_id"] == reviewed_id
+    assert published["floor_plan"]["name"] == "PUBLISHED-CURRENT"
+    assert published["scene_document"] == reviewed_scene
+
     detail = client.get(f"/api/projects/{pid}", headers=h_cli).json()
     assert detail["project"]["status"] == "PUBLISHED"
     assert detail["document"]["stage"] == "FINAL_DESIGN"
+    assert detail["current_revision"]["id"] == published["id"]
+    assert detail["current_revision"]["scene_document"] == reviewed_scene
+    assert detail["current_revision"]["floor_plan"]["name"] == "PUBLISHED-CURRENT"
 
 
 def test_admin_it_cannot_edit(client):
