@@ -297,8 +297,11 @@ export async function architectApprove(id: string) {
   return data as Project
 }
 
-export async function publishProject(id: string) {
-  const { data } = await api.post(`/projects/${id}/publish`)
+export async function publishProject(
+  id: string,
+  payload?: { scene_document?: unknown; floor_plan?: FloorPlan },
+) {
+  const { data } = await api.post(`/projects/${id}/publish`, payload || {})
   return data as Revision
 }
 

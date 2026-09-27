@@ -731,9 +731,12 @@ def client_approve(db: Session, actor: Actor, project_id: str) -> Approval:
     if not perm.can_approve(actor, project_as_dict(project)) or actor.role != "CLIENT":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Client cannot approve in this state")
     doc = _document(db, project)
-    approval = Approval(project_id=project.id, revision_id=doc.current_revision_id, actor_id=actor.id, kind="CLIENT_APPROVED")
+    review = _latest_review_revision(db, doc)
+    if review is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "No submitted review is available for approval")
+    approval = Approval(project_id=project.id, revision_id=review.id, actor_id=actor.id, kind="CLIENT_APPROVED")
     db.add(approval)
-    log_event(db, event_type="CLIENT_APPROVED", actor_id=actor.id, project_id=project.id, revision_id=doc.current_revision_id)
+    log_event(db, event_type="CLIENT_APPROVED", actor_id=actor.id, project_id=project.id, revision_id=review.id)
     notify(db, project.architect_id, "CLIENT_APPROVED", f"Client approved {project.name}", project.id)
     db.commit()
     db.refresh(approval)
@@ -744,49 +747,91 @@ def architect_approve(db: Session, actor: Actor, project_id: str) -> Project:
     project = _require_view(db, actor, project_id)
     if not perm.can_approve(actor, project_as_dict(project)) or actor.role != "ARCHITECT":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Architect cannot approve in this state")
+    doc = _document(db, project)
+    review = _latest_review_revision(db, doc)
+    if review is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "No submitted review is available for approval")
     client_ok = (
         db.query(Approval)
-        .filter(Approval.project_id == project.id, Approval.kind == "CLIENT_APPROVED")
+        .filter(
+            Approval.project_id == project.id,
+            Approval.kind == "CLIENT_APPROVED",
+            Approval.revision_id == review.id,
+        )
         .first()
     )
     if client_ok is None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Client approval is required before architect approval")
-    doc = _document(db, project)
-    db.add(Approval(project_id=project.id, revision_id=doc.current_revision_id, actor_id=actor.id, kind="ARCHITECT_APPROVED"))
+        raise HTTPException(status.HTTP_409_CONFLICT, "Client approval is required for the current submitted review")
+    db.add(Approval(project_id=project.id, revision_id=review.id, actor_id=actor.id, kind="ARCHITECT_APPROVED"))
     _set_status(db, project, "APPROVED", actor.id)
-    log_event(db, event_type="ARCHITECT_APPROVED", actor_id=actor.id, project_id=project.id, revision_id=doc.current_revision_id)
+    log_event(db, event_type="ARCHITECT_APPROVED", actor_id=actor.id, project_id=project.id, revision_id=review.id)
     notify(db, project.client_id, "ARCHITECT_APPROVED", f"Architect approved {project.name}", project.id)
     db.commit()
     db.refresh(project)
     return project
 
 
-def publish_project(db: Session, actor: Actor, project_id: str) -> Revision:
+def publish_project(
+    db: Session,
+    actor: Actor,
+    project_id: str,
+    scene_document: dict | None = None,
+    floor_plan: dict | None = None,
+) -> Revision:
     project = _require_view(db, actor, project_id)
     if not perm.can_publish(actor, project_as_dict(project)):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot publish")
+
     doc = _document(db, project)
     current = db.get(Revision, doc.current_revision_id) if doc.current_revision_id else None
-    if current is None:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No current revision to publish")
+    review = _latest_review_revision(db, doc)
+
+    # APPROVED follows the review that was actually shown and approved. Prefer
+    # the caller's live SceneDocument, then the persisted REVIEW snapshot.
+    source = review or current
+    if source is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No design available to publish")
+
+    # Once the project is APPROVED, the persisted REVIEW snapshot is the
+    # authoritative design that both parties approved. Do not let a stale
+    # frontend payload override that approved revision.
+    if review is not None:
+        source_floor_plan = _loads(review.floor_plan)
+        source_scene = _loads(review.scene_document)
+    else:
+        source_floor_plan = floor_plan if isinstance(floor_plan, dict) else _loads(source.floor_plan)
+        source_scene = scene_document if _is_scene_document(scene_document) else _loads(source.scene_document)
+
+    if not _is_scene_document(source_scene):
+        raise HTTPException(status.HTTP_409_CONFLICT, "The design being published has no valid SceneDocument")
+
     published = _add_revision(
         db,
         doc=doc,
-        floor_plan=_loads(current.floor_plan),
+        floor_plan=source_floor_plan,
         created_by=actor.id,
         source_type="PUBLISHED",
-        source_revision_id=current.id,
+        source_revision_id=source.id,
+        scene_document=source_scene,
     )
     doc.current_revision_id = published.id
+    doc.working_scene_document = None
+    doc.working_updated_at = None
     doc.stage = "FINAL_DESIGN"
     _set_status(db, project, "PUBLISHED", actor.id)
-    log_event(db, event_type="PROJECT_PUBLISHED", actor_id=actor.id, project_id=project.id, revision_id=published.id)
+    log_event(
+        db,
+        event_type="PROJECT_PUBLISHED",
+        actor_id=actor.id,
+        project_id=project.id,
+        revision_id=published.id,
+        metadata={"published_from_revision_id": source.id},
+    )
     notify(db, project.client_id, "PROJECT_PUBLISHED", f"{project.name} was published", project.id)
     notify_it(db, "PROJECT_PUBLISHED", f"{project.name} was published", project.id)
     db.commit()
     db.refresh(published)
     return published
-
 
 def list_notifications(db: Session, actor: Actor) -> list[dict]:
     rows = (

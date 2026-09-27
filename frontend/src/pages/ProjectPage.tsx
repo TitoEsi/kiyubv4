@@ -114,7 +114,10 @@ export default function ProjectPage() {
     setProject(detail.project)
     setStage(detail.document.stage)
     setCurrentRevisionId(detail.document.current_revision_id)
-    const visible = clientVisibleScene(detail)
+    const visible = clientVisibleScene({
+      ...detail,
+      project: detail.project,
+    })
     setSubmittedScene(visible.scene)
     setSubmittedRevisionId(visible.revisionId)
     if (visible.floorPlan) {
@@ -306,7 +309,11 @@ export default function ProjectPage() {
     sceneSourceRef.current = key
     const loaded = loadLiveScene(plan, undefined, {
       projectId,
-      existing: isArchitect && currentPlan ? workingCopyRef.current : submittedScene,
+      // During editing prefer the working copy; after publication the working
+      // copy is cleared, so fall back to the published current SceneDocument.
+      existing: isArchitect && currentPlan
+        ? (workingCopyRef.current || submittedScene)
+        : submittedScene,
     })
     setScene(loaded)
     setWorkingSaved(!!(isArchitect && currentPlan && workingCopyRef.current))
@@ -422,7 +429,29 @@ export default function ProjectPage() {
               <button type="button" className="catalog-generate-btn" onClick={async () => { await architectApprove(projectId!); await refresh() }}>Architect approve</button>
             )}
             {isArchitect && project?.status === 'APPROVED' && (
-              <button type="button" className="catalog-generate-btn" onClick={async () => { await publishProject(projectId!); await refresh() }}>Publish</button>
+              <button
+                type="button"
+                className="catalog-generate-btn"
+                onClick={async () => {
+                  if (!projectId) return
+                  try {
+                    // Publish the exact scene currently shown in the editor.
+                    // At APPROVED, this should be the same SceneDocument that was reviewed.
+                    const publishScene = scene
+                    const publishPlan = publishScene ? sceneDocumentToFloorPlan(publishScene) : currentPlan || undefined
+                    await publishProject(projectId, {
+                      scene_document: publishScene || undefined,
+                      floor_plan: publishPlan,
+                    })
+                    await refresh()
+                  } catch (err: unknown) {
+                    const ax = err as { response?: { data?: { detail?: string } } }
+                    setError(ax.response?.data?.detail || 'Could not publish the floor plan.')
+                  }
+                }}
+              >
+                Publish
+              </button>
             )}
             <Link className="back-btn" to={home}>Back to projects</Link>
           </div>
