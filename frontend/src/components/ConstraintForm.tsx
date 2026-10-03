@@ -21,6 +21,20 @@ import {
 } from '../types/questionnaire'
 import { validateQuestionnaire } from '../converters/validate-questionnaire'
 import { ARCHITECTURAL_STYLES } from '../data/architecturalStyles'
+import { useUnits } from '../units/UnitsProvider'
+import { areaSymbol, fromSquareMeters, MeasurementUnit, toSquareMeters } from '../units/measurement'
+import { AreaInput, MeasurementInput } from './MeasurementInput'
+
+const MIN_LOT_M = 1
+const LIVING_AREA_MIN_M2 = 75
+const LIVING_AREA_MAX_M2 = 560
+
+/** Slider step of roughly 5 m², rounded to one significant figure in the display unit. */
+function livingAreaSliderStep(unit: MeasurementUnit): number {
+  const raw = fromSquareMeters(5, unit)
+  const pow = Math.pow(10, Math.floor(Math.log10(raw)))
+  return Math.round(raw / pow) * pow
+}
 
 interface Props {
   value: QuestionnaireData
@@ -144,13 +158,14 @@ export default function ConstraintForm({ value, onChange, onGenerate, loading, h
     onChange({ ...q, preferences: { ...q.preferences, ...partial } })
   }
 
-  const validationIssues = useMemo(() => validateQuestionnaire(q), [q])
+  const { unit } = useUnits()
+  const validationIssues = useMemo(() => validateQuestionnaire(q, unit), [q, unit])
   const errors = validationIssues.filter(i => i.severity === 'error')
   const hasErrors = errors.length > 0
 
-  const sqftLabel = q.house.livingAreaSqft >= 1000
-    ? `${(q.house.livingAreaSqft / 1000).toFixed(1).replace('.0', '')}k`
-    : `${q.house.livingAreaSqft}`
+  const areaStep = livingAreaSliderStep(unit)
+  const areaMin = Math.ceil(fromSquareMeters(LIVING_AREA_MIN_M2, unit) / areaStep) * areaStep
+  const areaMax = Math.floor(fromSquareMeters(LIVING_AREA_MAX_M2, unit) / areaStep) * areaStep
 
   return (
     <div className="room-catalog">
@@ -201,42 +216,28 @@ export default function ConstraintForm({ value, onChange, onGenerate, loading, h
         <div className="catalog-row">
           <span className="catalog-row-label">Lot Width</span>
           <div className="catalog-row-right catalog-dimension-input">
-            <input
+            <MeasurementInput
               id="field-lotWidth"
-              type="number"
-              min={1}
-              step={0.1}
+              min={MIN_LOT_M}
               disabled={locked}
               value={q.site.lotWidth}
-              onChange={e => {
-                const lotWidth = Number(e.target.value)
-                if (!Number.isFinite(lotWidth)) return
-                patchSite({
-                  lotWidth,
-                  ...(q.site.lotShape === 'square' ? { lotDepth: lotWidth } : {}),
-                })
-              }}
+              onCommit={lotWidth => patchSite({
+                lotWidth,
+                ...(q.site.lotShape === 'square' ? { lotDepth: lotWidth } : {}),
+              })}
             />
-            <span>m</span>
           </div>
         </div>
         <div className="catalog-row">
           <span className="catalog-row-label">Lot Depth</span>
           <div className="catalog-row-right catalog-dimension-input">
-            <input
+            <MeasurementInput
               id="field-lotDepth"
-              type="number"
-              min={1}
-              step={0.1}
+              min={MIN_LOT_M}
               value={q.site.lotDepth}
               disabled={locked || q.site.lotShape === 'square'}
-              onChange={e => {
-                const lotDepth = Number(e.target.value)
-                if (!Number.isFinite(lotDepth)) return
-                patchSite({ lotDepth })
-              }}
+              onCommit={lotDepth => patchSite({ lotDepth })}
             />
-            <span>m</span>
           </div>
         </div>
       </div>
@@ -277,14 +278,25 @@ export default function ConstraintForm({ value, onChange, onGenerate, loading, h
           <span className="catalog-row-label">Living area</span>
           <div className="catalog-size-control" style={{ flex: 1 }}>
             <input
-              id="field-livingAreaSqft"
-              type="range" min={800} max={6000} step={100}
+              type="range" min={areaMin} max={areaMax} step={areaStep}
+              aria-label={`Living area (${areaSymbol(unit)})`}
               disabled={locked}
-              value={q.house.livingAreaSqft}
-              onChange={e => patchHouse({ livingAreaSqft: parseInt(e.target.value, 10) })}
+              value={fromSquareMeters(q.house.livingAreaM2, unit)}
+              onChange={e => {
+                const v = Number(e.target.value)
+                if (Number.isFinite(v)) patchHouse({ livingAreaM2: toSquareMeters(v, unit) })
+              }}
               className="catalog-sqft-slider"
             />
-            <span className="catalog-size-value">{sqftLabel} sqft</span>
+            <AreaInput
+              id="field-livingAreaM2"
+              className="catalog-size-value"
+              min={LIVING_AREA_MIN_M2}
+              max={LIVING_AREA_MAX_M2}
+              disabled={locked}
+              value={q.house.livingAreaM2}
+              onCommit={livingAreaM2 => patchHouse({ livingAreaM2 })}
+            />
           </div>
         </div>
       </div>

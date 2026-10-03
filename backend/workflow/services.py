@@ -12,6 +12,15 @@ logger = logging.getLogger(__name__)
 
 from fastapi import HTTPException, status
 
+from generation_units import (
+    METRIC,
+    normalize_comment_coords,
+    normalize_floor_plan,
+    normalize_questionnaire,
+    normalize_scene_document,
+    normalize_specification,
+)
+
 from . import permissions as perm
 from .audit import log_event, notify, notify_it, notify_project_roles
 from .generate import brief_to_constraints, run_generation
@@ -215,7 +224,12 @@ def _add_revision(
     source_revision_id: str | None = None,
     scene_document: dict | None = None,
 ) -> Revision:
-    scene_payload = scene_document if scene_document is not None else floor_plan_to_scene_document(floor_plan)
+    floor_plan = normalize_floor_plan(floor_plan)
+    scene_payload = (
+        normalize_scene_document(scene_document)
+        if scene_document is not None
+        else floor_plan_to_scene_document(floor_plan)
+    )
     rev = Revision(
         design_document_id=doc.id,
         version=_next_version(db, doc.id),
@@ -281,8 +295,9 @@ def save_brief(db: Session, actor: Actor, project_id: str, questionnaire: dict, 
     if brief is None:
         brief = ClientBrief(project_id=project.id)
         db.add(brief)
+    questionnaire = normalize_questionnaire(questionnaire)
     brief.questionnaire = json.dumps(questionnaire)
-    brief.specification = json.dumps(specification or {})
+    brief.specification = json.dumps(normalize_specification(specification or {}))
     brief.updated_at = _now()
     _sync_site_constraints(db, project.id, questionnaire)
     doc = _document(db, project)
@@ -298,8 +313,8 @@ def get_brief(db: Session, actor: Actor, project_id: str) -> dict:
     brief = db.query(ClientBrief).filter(ClientBrief.project_id == project.id).one_or_none()
     return {
         "project": project_as_dict(project),
-        "questionnaire": _loads(brief.questionnaire) if brief else {},
-        "specification": _loads(brief.specification) if brief else {},
+        "questionnaire": normalize_questionnaire(_loads(brief.questionnaire)) if brief else {},
+        "specification": normalize_specification(_loads(brief.specification)) if brief else {},
     }
 
 
@@ -353,6 +368,7 @@ def generate_candidates(db: Session, actor: Actor, project_id: str) -> dict:
     # Overwrite safety: never PUT onto current architect revision, even if it changed while the job ran.
     candidates = []
     for plan in plans:
+        plan = normalize_floor_plan(plan)
         scene = floor_plan_to_scene_document(plan)
         site = scene.setdefault("site", {})
         site["width"] = constraints.get("lotWidth")
@@ -467,6 +483,10 @@ def accept_candidate(db: Session, actor: Actor, project_id: str, candidate_id: s
         metadata={"from_candidate": cand.id, "copied_from": source.id},
     )
     notify(db, project.client_id, "REVISION_CREATED", f"Architect started a design from an AI candidate on {project.name}", project.id)
+    scene = _loads(source.scene_document)
+    if _is_scene_document(scene):
+        doc.working_scene_document = json.dumps(scene)
+        doc.working_updated_at = _now()
     db.commit()
     db.refresh(copy)
     return copy
@@ -582,6 +602,7 @@ def add_comment(
         body=body,
         x=x,
         y=y,
+        coord_units=METRIC,
     )
     db.add(comment)
     log_event(db, event_type="COMMENT_CREATED", actor_id=actor.id, project_id=project.id, revision_id=comment.revision_id)
@@ -608,10 +629,14 @@ def update_comment(db: Session, actor: Actor, project_id: str, comment_id: str, 
         comment.body = patch["body"]
     if "object_id" in patch:
         comment.object_id = patch["object_id"]
-    if "x" in patch:
-        comment.x = patch["x"]
-    if "y" in patch:
-        comment.y = patch["y"]
+    if "x" in patch or "y" in patch:
+        comment.x, comment.y = normalize_comment_coords(comment.x, comment.y, comment.coord_units)
+        comment.coord_units = METRIC
+        if "x" in patch:
+            comment.x = patch["x"]
+        if "y" in patch:
+            comment.y = patch["y"]
+    db.touch(comment)
     db.commit()
     db.refresh(comment)
     return comment
@@ -646,6 +671,27 @@ def _latest_review_revision(db: Session, doc: DesignDocument) -> Revision | None
         .order_by(Revision.version.desc())
         .first()
     )
+
+
+def _require_latest_review(db: Session, doc: DesignDocument) -> Revision:
+    review = _latest_review_revision(db, doc)
+    if review is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "No submitted review is available for approval")
+    return review
+
+
+def _active_review_revision(db: Session, doc: DesignDocument, project: Project) -> Revision | None:
+    if project.status not in ("FOR_CHECKING", "APPROVED"):
+        return None
+    submitted = _latest_review_revision(db, doc)
+    if submitted is None:
+        return None
+    if project.status == "APPROVED":
+        return submitted
+    current = db.get(Revision, doc.current_revision_id) if doc.current_revision_id else None
+    if current and current.version > submitted.version:
+        return None
+    return submitted
 
 
 def submit_review(
@@ -704,18 +750,6 @@ def submit_review(
     return data
 
 
-def request_revision(db: Session, actor: Actor, project_id: str) -> Project:
-    project = _require_view(db, actor, project_id)
-    if not perm.can_request_revision(actor, project_as_dict(project)):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot request revision")
-    _set_status(db, project, "FOR_REVISION", actor.id)
-    log_event(db, event_type="REVISION_REQUESTED", actor_id=actor.id, project_id=project.id)
-    notify(db, project.architect_id, "REVISION_REQUESTED", f"Client requested changes on {project.name}", project.id)
-    db.commit()
-    db.refresh(project)
-    return project
-
-
 def resume_after_revision(db: Session, actor: Actor, project_id: str) -> Project:
     project = _require_view(db, actor, project_id)
     if not perm.can_edit_design(actor, project_as_dict(project)):
@@ -731,9 +765,10 @@ def client_approve(db: Session, actor: Actor, project_id: str) -> Approval:
     if not perm.can_approve(actor, project_as_dict(project)) or actor.role != "CLIENT":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Client cannot approve in this state")
     doc = _document(db, project)
-    approval = Approval(project_id=project.id, revision_id=doc.current_revision_id, actor_id=actor.id, kind="CLIENT_APPROVED")
+    review = _require_latest_review(db, doc)
+    approval = Approval(project_id=project.id, revision_id=review.id, actor_id=actor.id, kind="CLIENT_APPROVED")
     db.add(approval)
-    log_event(db, event_type="CLIENT_APPROVED", actor_id=actor.id, project_id=project.id, revision_id=doc.current_revision_id)
+    log_event(db, event_type="CLIENT_APPROVED", actor_id=actor.id, project_id=project.id, revision_id=review.id)
     notify(db, project.architect_id, "CLIENT_APPROVED", f"Client approved {project.name}", project.id)
     db.commit()
     db.refresh(approval)
@@ -744,40 +779,55 @@ def architect_approve(db: Session, actor: Actor, project_id: str) -> Project:
     project = _require_view(db, actor, project_id)
     if not perm.can_approve(actor, project_as_dict(project)) or actor.role != "ARCHITECT":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Architect cannot approve in this state")
+    doc = _document(db, project)
+    review = _require_latest_review(db, doc)
     client_ok = (
         db.query(Approval)
-        .filter(Approval.project_id == project.id, Approval.kind == "CLIENT_APPROVED")
+        .filter(
+            Approval.project_id == project.id,
+            Approval.kind == "CLIENT_APPROVED",
+            Approval.revision_id == review.id,
+        )
         .first()
     )
     if client_ok is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Client approval is required before architect approval")
-    doc = _document(db, project)
-    db.add(Approval(project_id=project.id, revision_id=doc.current_revision_id, actor_id=actor.id, kind="ARCHITECT_APPROVED"))
+    db.add(Approval(project_id=project.id, revision_id=review.id, actor_id=actor.id, kind="ARCHITECT_APPROVED"))
     _set_status(db, project, "APPROVED", actor.id)
-    log_event(db, event_type="ARCHITECT_APPROVED", actor_id=actor.id, project_id=project.id, revision_id=doc.current_revision_id)
+    log_event(db, event_type="ARCHITECT_APPROVED", actor_id=actor.id, project_id=project.id, revision_id=review.id)
     notify(db, project.client_id, "ARCHITECT_APPROVED", f"Architect approved {project.name}", project.id)
     db.commit()
     db.refresh(project)
     return project
 
 
-def publish_project(db: Session, actor: Actor, project_id: str) -> Revision:
+def publish_project(
+    db: Session,
+    actor: Actor,
+    project_id: str,
+    scene_document: dict | None = None,
+    floor_plan: dict | None = None,
+) -> Revision:
+    """Publish the approved REVIEW snapshot. Optional body is ignored so a stale canvas cannot override it."""
     project = _require_view(db, actor, project_id)
     if not perm.can_publish(actor, project_as_dict(project)):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot publish")
     doc = _document(db, project)
-    current = db.get(Revision, doc.current_revision_id) if doc.current_revision_id else None
-    if current is None:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No current revision to publish")
+    review = _latest_review_revision(db, doc)
+    if review is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No submitted review is available to publish")
     published = _add_revision(
         db,
         doc=doc,
-        floor_plan=_loads(current.floor_plan),
+        floor_plan=_loads(review.floor_plan),
         created_by=actor.id,
         source_type="PUBLISHED",
-        source_revision_id=current.id,
+        source_revision_id=review.id,
+        scene_document=_loads(review.scene_document),
     )
     doc.current_revision_id = published.id
+    doc.working_scene_document = None
+    doc.working_updated_at = None
     doc.stage = "FINAL_DESIGN"
     _set_status(db, project, "PUBLISHED", actor.id)
     log_event(db, event_type="PROJECT_PUBLISHED", actor_id=actor.id, project_id=project.id, revision_id=published.id)
@@ -950,8 +1000,17 @@ def serialize_user(u: User) -> dict:
         "suspended": bool(getattr(u, "suspended", False)),
         "deleted_at": u.deleted_at.isoformat() if getattr(u, "deleted_at", None) else None,
         "full_name": u.full_name,
+        "measurement_unit": getattr(u, "measurement_unit", None) or "m",
         "created_at": u.created_at.isoformat() if u.created_at else None,
     }
+
+
+def update_preferences(db: Session, user: User, measurement_unit: str) -> dict:
+    user.measurement_unit = measurement_unit
+    db.touch(user)
+    db.commit()
+    db.refresh(user)
+    return serialize_user(user)
 
 
 def serialize_revision(r: Revision, current_id: str | None = None, include_payload: bool = False) -> dict:
@@ -965,8 +1024,8 @@ def serialize_revision(r: Revision, current_id: str | None = None, include_paylo
         "is_current": r.id == current_id,
     }
     if include_payload:
-        data["floor_plan"] = _loads(r.floor_plan)
-        data["scene_document"] = _loads(r.scene_document)
+        data["floor_plan"] = normalize_floor_plan(_loads(r.floor_plan))
+        data["scene_document"] = normalize_scene_document(_loads(r.scene_document))
     return data
 
 
@@ -979,8 +1038,8 @@ def serialize_candidate(db: Session, c: AICandidate) -> dict:
         "revision_id": c.revision_id,
         "selected_by_client": c.selected_by_client,
         "created_at": c.created_at.isoformat() if c.created_at else None,
-        "floor_plan": _loads(rev.floor_plan) if rev else {},
-        "scene_document": _loads(rev.scene_document) if rev else {},
+        "floor_plan": normalize_floor_plan(_loads(rev.floor_plan)) if rev else {},
+        "scene_document": normalize_scene_document(_loads(rev.scene_document)) if rev else {},
         "source_type": rev.source_type if rev else None,
     }
 
@@ -1001,6 +1060,7 @@ def serialize_job(job: GenerationJob) -> dict:
 
 def serialize_comment(c: Comment, db: Session | None = None) -> dict:
     author = db.get(User, c.author_id) if db is not None else None
+    x, y = normalize_comment_coords(c.x, c.y, getattr(c, "coord_units", None))
     return {
         "id": c.id,
         "project_id": c.project_id,
@@ -1011,8 +1071,9 @@ def serialize_comment(c: Comment, db: Session | None = None) -> dict:
         "author_role": author.role if author else None,
         "object_id": c.object_id,
         "body": c.body,
-        "x": c.x,
-        "y": c.y,
+        "x": x,
+        "y": y,
+        "coord_units": METRIC,
         "created_at": c.created_at.isoformat() if c.created_at else None,
     }
 
@@ -1032,7 +1093,7 @@ def project_detail(db: Session, actor: Actor, project_id: str) -> dict:
     project = _require_view(db, actor, project_id)
     doc = _document(db, project)
     current = db.get(Revision, doc.current_revision_id) if doc.current_revision_id else None
-    submitted = _latest_review_revision(db, doc)
+    submitted = _active_review_revision(db, doc, project)
     payload = project_as_dict(project, db)
     invitation = (
         db.query(Invitation)
@@ -1063,7 +1124,6 @@ def project_detail(db: Session, actor: Actor, project_id: str) -> dict:
             "canGenerate": perm.can_generate(actor, payload),
             "canComment": perm.can_comment(actor, payload),
             "canSelectCandidate": perm.can_select_candidate(actor, payload),
-            "canRequestRevision": perm.can_request_revision(actor, payload),
             "canApprove": perm.can_approve(actor, payload),
             "canPublish": perm.can_publish(actor, payload),
             "canOpenArchitectCanvas": perm.can_open_architect_canvas(actor, payload),
@@ -1090,6 +1150,8 @@ def serialize_invitation(inv: Invitation, token: str | None = None, db: Session 
     if token:
         data["token"] = token
         data["invite_url"] = f"/invite/{token}"
+    if db is not None:
+        data["existing_client"] = _client_profile_exists(db, inv.email)
     return data
 
 
@@ -1134,8 +1196,17 @@ def _default_project_name(email: str, project_name: str | None) -> str:
     return f"Project with {local}"
 
 
+def _user_by_email(db: Session, email: str) -> User | None:
+    return db.query(User).filter(User.email == email).one_or_none()
+
+
+def _client_profile_exists(db: Session, email: str) -> bool:
+    user = _user_by_email(db, email)
+    return bool(user and user.role == "CLIENT")
+
+
 def _email_already_registered(db: Session, email: str) -> bool:
-    if db.query(User).filter(User.email == email).one_or_none():
+    if _user_by_email(db, email):
         return True
     try:
         from supabase.auth import auth_user_exists
@@ -1154,6 +1225,9 @@ def create_client_invitation(db: Session, actor: Actor, email: str, project_name
     email = email.lower().strip()
     if not email or "@" not in email:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "A valid email is required")
+    existing = _user_by_email(db, email)
+    if existing and existing.role != "CLIENT":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "This email belongs to an architect or staff account")
     pending = (
         db.query(Invitation)
         .filter(
@@ -1166,8 +1240,6 @@ def create_client_invitation(db: Session, actor: Actor, email: str, project_name
     for row in pending:
         _refresh_invitation_status(db, row)
     active = [row for row in pending if row.status == "PENDING"]
-    if _email_already_registered(db, email) and not active:
-        raise HTTPException(status.HTTP_409_CONFLICT, "This email cannot be invited")
     if active and not resend:
         raise HTTPException(status.HTTP_409_CONFLICT, "A pending invitation already exists for this email")
     if active and resend:
@@ -1192,24 +1264,29 @@ def create_client_invitation(db: Session, actor: Actor, email: str, project_name
         event_type="CLIENT_INVITED",
         actor_id=actor.id,
         target=email,
-        metadata={"invitation_id": inv.id, "project_name": name},
+        metadata={"invitation_id": inv.id, "project_name": name, "existing_client": bool(existing and existing.role == "CLIENT")},
     )
     notify(db, actor.id, "CLIENT_INVITED", f"Invitation created for {email}", None)
-    try:
-        redirect = f"{mail.require_public_app_url()}/invite/{token}"
-        auth_uid = mail.send_auth_invite(email, redirect, {"role": "CLIENT", "invitation_id": inv.id})
-    except Exception as exc:
-        if not resend:
-            db.delete(inv)
-            db.commit()
-            raise mail.invite_failed(exc) from exc
-        auth_uid = None
-    if auth_uid:
-        inv.auth_user_id = auth_uid
+    if existing and existing.role == "CLIENT":
+        inv.auth_user_id = existing.id
+        notify(db, existing.id, "CLIENT_INVITED", f"You were invited to a new project: {name}", None)
         db.touch(inv)
+    elif not _email_already_registered(db, email):
+        try:
+            redirect = f"{mail.require_public_app_url()}/invite/{token}"
+            auth_uid = mail.send_auth_invite(email, redirect, {"role": "CLIENT", "invitation_id": inv.id})
+        except Exception as exc:
+            if not resend:
+                db.delete(inv)
+                db.commit()
+                raise mail.invite_failed(exc) from exc
+            auth_uid = None
+        if auth_uid:
+            inv.auth_user_id = auth_uid
+            db.touch(inv)
     db.commit()
     db.refresh(inv)
-    return serialize_invitation(inv, token=token)
+    return serialize_invitation(inv, token=token, db=db)
 
 
 def create_invitation(db: Session, actor: Actor, project_id: str, email: str, resend: bool = False) -> dict:
@@ -1262,13 +1339,18 @@ def cancel_invitation(db: Session, actor: Actor, invitation_id: str) -> dict:
 def public_invitation(db: Session, token: str) -> dict:
     inv = _get_invitation_by_token(db, token)
     project = db.get(Project, inv.project_id) if inv.project_id else None
+    architect = db.get(User, inv.architect_id) if inv.architect_id else None
+    architect_name = None
+    if architect:
+        architect_name = architect.full_name or architect.email
     db.commit()
     return {
         "email": inv.email,
         "project_name": project.name if project else inv.project_name,
+        "architect_name": architect_name,
         "status": inv.status,
         "expires_at": inv.expires_at.isoformat() if inv.expires_at else None,
-        "needs_registration": inv.status == "PENDING",
+        "needs_registration": inv.status == "PENDING" and not _client_profile_exists(db, inv.email),
     }
 
 
@@ -1408,7 +1490,30 @@ def register_client_from_invite(db: Session, email: str, password: str, token: s
     return complete_client_account(db, email, password, token, full_name)
 
 
-def complete_client_account(db: Session, email: str, password: str, token: str, full_name: str | None = None) -> dict:
+def _require_legal_acceptance(accept_terms: bool, accept_privacy: bool) -> None:
+    if not (accept_terms and accept_privacy):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "You must accept the Terms and Conditions and Privacy Policy to create an account.",
+        )
+
+
+def _stamp_legal_acceptance(user: User) -> None:
+    now = _now()
+    user.terms_accepted_at = now
+    user.privacy_accepted_at = now
+
+
+def complete_client_account(
+    db: Session,
+    email: str,
+    password: str,
+    token: str,
+    full_name: str | None = None,
+    *,
+    accept_terms: bool = False,
+    accept_privacy: bool = False,
+) -> dict:
     inv = _get_invitation_by_token(db, token)
     if inv.status == "ACCEPTED":
         existing = db.query(User).filter(User.email == inv.email).one_or_none()
@@ -1426,6 +1531,7 @@ def complete_client_account(db: Session, email: str, password: str, token: str, 
     name = (full_name or "").strip()
     if not name:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Full name is required")
+    _require_legal_acceptance(accept_terms, accept_privacy)
     from .auth import provision_user
     from .db import supabase_enabled
 
@@ -1449,6 +1555,7 @@ def complete_client_account(db: Session, email: str, password: str, token: str, 
         user.approved = True
     user.full_name = name
     user.email = email
+    _stamp_legal_acceptance(user)
     db.touch(user)
     db.flush()
     log_event(db, event_type="ACCOUNT_MODIFIED", actor_id=user.id, target=user.id, metadata={"created": True, "role": "CLIENT", "via": "invitation"})
@@ -1689,7 +1796,14 @@ def public_architect_application(db: Session, token: str) -> dict:
     }
 
 
-def complete_architect_application(db: Session, token: str, password: str) -> dict:
+def complete_architect_application(
+    db: Session,
+    token: str,
+    password: str,
+    *,
+    accept_terms: bool = False,
+    accept_privacy: bool = False,
+) -> dict:
     row = _get_architect_application_by_token(db, token)
     if row.status == "COMPLETED":
         user = db.get(User, row.accepted_user_id) if row.accepted_user_id else db.query(User).filter(User.email == row.email).one_or_none()
@@ -1698,6 +1812,7 @@ def complete_architect_application(db: Session, token: str, password: str) -> di
         return {"user": serialize_user(user)}
     if row.status != "APPROVED":
         raise HTTPException(status.HTTP_409_CONFLICT, "This invitation is not ready for account completion")
+    _require_legal_acceptance(accept_terms, accept_privacy)
     from .auth import provision_user
     from .db import supabase_enabled
 
@@ -1718,6 +1833,7 @@ def complete_architect_application(db: Session, token: str, password: str) -> di
         user.approved = True
         user.role = "ARCHITECT"
     user.full_name = row.full_name
+    _stamp_legal_acceptance(user)
     db.touch(user)
     row.status = "COMPLETED"
     row.accepted_user_id = user.id

@@ -15,7 +15,7 @@ export function specificationToConstraints(
     lotDepth: spec.site.depth,
     bedrooms: spec.building.bedrooms,
     bathrooms: spec.building.bathrooms,
-    sqft: spec.building.livingAreaSqft,
+    livingAreaM2: spec.building.livingAreaM2,
     stories: spec.building.floors,
     style: spec.style,
     openPlan: spec.features.openPlan,

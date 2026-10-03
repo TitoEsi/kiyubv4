@@ -12,6 +12,7 @@ import type { SceneDocument } from '../scene-graph/types'
 import { loadLiveScene } from '../scene-graph/edit/load-scene'
 import { sceneDocumentToFloorPlan } from '../scene-graph/adapters/scene-document-to-floorplan'
 import { useAuth } from '../workflow/auth'
+import { useUnits } from '../units/UnitsProvider'
 import { roleHome } from '../workflow/paths'
 import {
   acceptCandidate,
@@ -32,7 +33,6 @@ import {
   patchComment,
   Project,
   publishProject,
-  requestRevision,
   resumeProject,
   Revision,
   saveBrief,
@@ -66,6 +66,7 @@ function generationError(err: unknown): string {
 export default function ProjectPage() {
   const { projectId } = useParams()
   const { user } = useAuth()
+  const { unit } = useUnits()
   const [project, setProject] = useState<Project | null>(null)
   const [questionnaire, setQuestionnaire] = useState<QuestionnaireData>(initialQuestionnaire)
   const [candidates, setCandidates] = useState<Candidate[]>([])
@@ -132,7 +133,10 @@ export default function ProjectPage() {
     }
     const brief = await getBrief(projectId)
     if (brief.questionnaire && Object.keys(brief.questionnaire).length) {
-      setQuestionnaire(brief.questionnaire)
+      setQuestionnaire({
+        ...brief.questionnaire,
+        house: { ...initialQuestionnaire.house, ...brief.questionnaire.house },
+      })
     }
     setCandidates(await listCandidates(projectId))
     setComments(await listComments(projectId))
@@ -173,7 +177,7 @@ export default function ProjectPage() {
 
   async function onGenerate() {
     if (!projectId) return
-    const issues = validateQuestionnaire(questionnaire)
+    const issues = validateQuestionnaire(questionnaire, unit)
     if (issues.some(i => i.severity === 'error')) {
       setError(issues.filter(i => i.severity === 'error').map(i => `${i.message}\n${i.detail}`).join('\n\n'))
       return
@@ -306,7 +310,7 @@ export default function ProjectPage() {
     sceneSourceRef.current = key
     const loaded = loadLiveScene(plan, undefined, {
       projectId,
-      existing: isArchitect && currentPlan ? workingCopyRef.current : submittedScene,
+      existing: (isArchitect && workingCopyRef.current) || submittedScene,
     })
     setScene(loaded)
     setWorkingSaved(!!(isArchitect && currentPlan && workingCopyRef.current))
@@ -413,10 +417,7 @@ export default function ProjectPage() {
               <button type="button" className="back-btn" onClick={async () => { await resumeProject(projectId!); await refresh() }}>Resume design</button>
             )}
             {isClient && project?.status === 'FOR_CHECKING' && (
-              <>
-                <button type="button" className="back-btn" onClick={async () => { await requestRevision(projectId!); await refresh() }}>Request changes</button>
-                <button type="button" className="catalog-generate-btn" onClick={async () => { await clientApprove(projectId!); await refresh() }}>Approve design</button>
-              </>
+              <button type="button" className="catalog-generate-btn" onClick={async () => { await clientApprove(projectId!); await refresh() }}>Approve design</button>
             )}
             {isArchitect && project?.status === 'FOR_CHECKING' && (
               <button type="button" className="catalog-generate-btn" onClick={async () => { await architectApprove(projectId!); await refresh() }}>Architect approve</button>

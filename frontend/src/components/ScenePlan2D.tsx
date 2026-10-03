@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Opening, SceneDocument, Wall } from '../scene-graph/types'
-import { ftToM, mToFt, formatFeet } from '../scene-graph/units'
+import { useFormat } from '../units/UnitsProvider'
 import { wallLength, wallPointAtT, projectT } from '../scene-graph/edit/geometry'
 import { snapPoint } from '../scene-graph/edit/snap'
 import { commentRoleLabel, PlanAnnotation } from './planAnnotations'
@@ -104,16 +104,18 @@ export default function ScenePlan2D({
   selectedAnnotationId?: string | null
   currentUserId?: string
   draft?: { x: number; y: number; object_id: string | null; body: string } | null
-  onPlaceAnnotation?: (xFt: number, yFt: number, roomId: string | null) => void
+  /** Pin position in plan meters. */
+  onPlaceAnnotation?: (xM: number, yM: number, roomId: string | null) => void
   onSelectAnnotation?: (id: string | null) => void
   onDraftChange?: (body: string) => void
   onDraftSubmit?: () => void
   onDraftCancel?: () => void
   onUpdateAnnotation?: (id: string, body: string) => void
   onDeleteAnnotation?: (id: string) => void
-  onMoveAnnotation?: (id: string, xFt: number, yFt: number) => void
+  onMoveAnnotation?: (id: string, xM: number, yM: number) => void
   guides?: Array<{ x1: number; y1: number; x2: number; y2: number }>
 }) {
+  const fmt = useFormat()
   const svgRef = useRef<SVGSVGElement>(null)
   const altRef = useRef(false)
   const [spaceHeld, setSpaceHeld] = useState(false)
@@ -250,7 +252,7 @@ export default function ScenePlan2D({
           const p = snapped(raw, e)
           setCursor(p)
           if (annotationMode && onPlaceAnnotation) {
-            onPlaceAnnotation(mToFt(p.x), mToFt(p.y), roomAt(p.x, p.y))
+            onPlaceAnnotation(p.x, p.y, roomAt(p.x, p.y))
             return
           }
           if (e.button === 1 || e.shiftKey || spaceHeld) {
@@ -404,7 +406,7 @@ export default function ScenePlan2D({
                   fontSize={11}
                   fill="#c45c26"
                 >
-                  {formatFeet(wallLength(wall))}
+                  {fmt.length(wallLength(wall))}
                 </text>
               )}
             </g>
@@ -473,7 +475,7 @@ export default function ScenePlan2D({
           <line x1={ox + drawStart.x * S} y1={oy + drawStart.y * S} x2={ox + cursor.x * S} y2={oy + cursor.y * S} stroke="#3d7a78" strokeDasharray="6 4" />
         )}
         {annotations.map(a => {
-          const pt = a.x != null && a.y != null ? { x: ftToM(a.x), y: ftToM(a.y) } : null
+          const pt = a.x != null && a.y != null ? { x: a.x, y: a.y } : null
           if (!pt) return null
           const isClient = a.author_role === 'CLIENT'
           return (
@@ -492,8 +494,8 @@ export default function ScenePlan2D({
       <div className="archplan-note-overlay">
         {annotations.map(a => {
           if (a.id !== selectedAnnotationId || a.x == null || a.y == null) return null
-          const px = ox + ftToM(a.x) * S
-          const py = oy + ftToM(a.y) * S
+          const px = ox + a.x * S
+          const py = oy + a.y * S
           const mine = a.author_id === currentUserId
           return (
             <div key={a.id} className="plan-note-card" style={{ left: px + 10, top: Math.max(8, py - 78) }}>
@@ -532,7 +534,7 @@ export default function ScenePlan2D({
           )
         })}
         {draft && (
-          <form className="plan-note-card" style={{ left: ox + ftToM(draft.x) * S + 10, top: Math.max(8, oy + ftToM(draft.y) * S - 56) }}
+          <form className="plan-note-card" style={{ left: ox + draft.x * S + 10, top: Math.max(8, oy + draft.y * S - 56) }}
             onSubmit={e => { e.preventDefault(); onDraftSubmit?.() }}>
             <textarea value={draft.body} onChange={e => onDraftChange?.(e.target.value)} placeholder="Write a note" autoFocus />
             <div className="plan-note-actions">

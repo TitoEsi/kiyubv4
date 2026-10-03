@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -17,6 +17,8 @@ class RegisterBody(BaseModel):
     role: str = "CLIENT"
     invitation_token: str | None = None
     full_name: str | None = None
+    accept_terms: bool = False
+    accept_privacy: bool = False
 
 
 class ProjectCreate(BaseModel):
@@ -33,6 +35,10 @@ class ProjectAssign(BaseModel):
 class BriefBody(BaseModel):
     questionnaire: dict[str, Any]
     specification: dict[str, Any] = Field(default_factory=dict)
+
+
+class PreferencesBody(BaseModel):
+    measurement_unit: Literal["m", "ft", "cm", "mm", "in"]
 
 
 class CommentBody(BaseModel):
@@ -62,6 +68,11 @@ class WorkingDesignBody(BaseModel):
 
 
 class SubmitReviewBody(BaseModel):
+    scene_document: dict[str, Any] | None = None
+    floor_plan: dict[str, Any] | None = None
+
+
+class PublishBody(BaseModel):
     scene_document: dict[str, Any] | None = None
     floor_plan: dict[str, Any] | None = None
 
@@ -97,3 +108,5 @@ class ArchitectApplicationReject(BaseModel):
 class ArchitectApplicationComplete(BaseModel):
     password: str
     role: str | None = None
+    accept_terms: bool = False
+    accept_privacy: bool = False

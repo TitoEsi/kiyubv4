@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canOpenStudio, historyPath, roleNavItems } from './roleNav'
+import { historyPath, roleNavItems } from './roleNav'
 
 describe('role nav', () => {
   it('keeps About and Contact out of every role nav', () => {
@@ -17,11 +17,12 @@ describe('role nav', () => {
     expect(roleNavItems('IT_PERSONNEL').map(i => i.label)).toEqual(['Dashboard', 'Clients', 'Architects', 'Analytics', 'History'])
   })
 
-  it('hides Studio for Admin and IT', () => {
-    expect(canOpenStudio('CLIENT')).toBe(true)
-    expect(canOpenStudio('ARCHITECT')).toBe(true)
-    expect(canOpenStudio('MAIN_ADMIN')).toBe(false)
-    expect(canOpenStudio('IT_PERSONNEL')).toBe(false)
+  it('exposes Studio to no role', () => {
+    for (const role of ['CLIENT', 'ARCHITECT', 'MAIN_ADMIN', 'IT_PERSONNEL']) {
+      const items = roleNavItems(role)
+      expect(items.map(i => i.to)).not.toContain('/sandbox')
+      expect(items.map(i => i.label)).not.toContain('Studio')
+    }
   })
 
   it('has a role-prefixed history path', () => {

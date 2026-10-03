@@ -8,6 +8,7 @@ export interface PlanAnnotation {
   author_role?: string | null
   created_at: string | null
   object_id?: string | null
+  /** Plan meters (legacy plan-feet pins are normalized in workflow/api.ts). */
   x?: number | null
   y?: number | null
 }

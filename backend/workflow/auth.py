@@ -119,6 +119,17 @@ def get_current_user(
     return user
 
 
+STUDIO_API_ROLES = {"MAIN_ADMIN", "IT_PERSONNEL"}
+
+
+def require_studio_user(user: User = Depends(get_current_user)) -> User:
+    if user.role == "CLIENT":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Clients are not authorized to use Studio generation.")
+    if user.role not in STUDIO_API_ROLES:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Studio generation is not available for this account.")
+    return user
+
+
 def account_block_reason(user: User) -> str | None:
     if getattr(user, "deleted_at", None):
         return "Account is no longer available"

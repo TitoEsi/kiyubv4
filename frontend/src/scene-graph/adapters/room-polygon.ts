@@ -1,7 +1,8 @@
 import type { FootprintPart, Room as FloorPlanRoom } from '../../types/floorplan'
 import type { Point2D } from '../types'
 
-const EPS = 0.04
+/** Vertex snap tolerance in meters. */
+const EPS = 0.012
 
 function q(n: number): number {
   return Math.round(n / EPS) * EPS

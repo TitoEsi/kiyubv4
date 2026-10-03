@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ArchitectClientRow, Project } from './api'
-import { filterAndSortClients, filterAndSortProjects, floorPlanLabel } from './projectQuery'
+import { filterAndSortClients, filterAndSortProjects, floorPlanLabel, groupClientsByEmail } from './projectQuery'
 
 const projects: Project[] = [
   {
@@ -78,5 +78,26 @@ describe('client query', () => {
   it('searches by email and project', () => {
     expect(filterAndSortClients(clients, 'maria', 'name-asc').map(r => r.email)).toEqual(['maria@kiyub.local'])
     expect(filterAndSortClients(clients, 'residential', 'invitation').map(r => r.email)).toEqual(['juan@kiyub.local'])
+  })
+
+  it('groups one client with many projects by email', () => {
+    const extra: ArchitectClientRow = {
+      email: 'JUAN@kiyub.local',
+      full_name: 'Juan',
+      user_id: 'c1',
+      project_id: '3',
+      project_name: 'Second House',
+      invitation_status: 'ACCEPTED',
+      project_status: 'DRAFT',
+      last_activity: '2026-01-05T00:00:00Z',
+      created_at: '2026-01-05T00:00:00Z',
+      invitation_id: 'i3',
+    }
+    const groups = groupClientsByEmail([...clients, extra])
+    const juan = groups.find(g => g.email.toLowerCase() === 'juan@kiyub.local')
+    expect(juan?.projects).toHaveLength(2)
+    expect(juan?.full_name).toBe('Juan')
+    expect(juan?.last_activity).toBe('2026-01-05T00:00:00Z')
+    expect(groups).toHaveLength(2)
   })
 })

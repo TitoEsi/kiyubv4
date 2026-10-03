@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FEET_TO_METERS, floorPlanToSceneDocument } from './floorplan-to-scene-document'
+import { floorPlanToSceneDocument } from './floorplan-to-scene-document'
 import { sceneDocumentToFloorPlan } from './scene-document-to-floorplan'
 import { FIDELITY_PLAN } from './fidelity.fixture'
 import { fidelityReport, sceneRenderIds } from './scene-entities'
@@ -7,6 +7,8 @@ import { loadLiveScene } from '../edit/load-scene'
 import { shapeXY, toWorld, validateSceneDocumentGeometry, wallYaw } from './scene-to-world'
 
 const LOT = { lotWidth: 20, lotDepth: 14 }
+/** FIDELITY_PLAN is a legacy feet plan (no `units`). */
+const FEET_TO_METERS = 0.3048
 
 describe('fidelity conversion', () => {
   it('preserves rooms, walls, openings, furniture, and L-polygon', () => {

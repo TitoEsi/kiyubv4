@@ -3,7 +3,6 @@ import { Link, useNavigate } from 'react-router-dom'
 import KiyubLogo from '../components/KiyubLogo'
 import LandingHeader from '../components/LandingHeader'
 import PasswordField from '../components/PasswordField'
-import TermsAgree from '../components/TermsAgree'
 import { useAuth } from '../workflow/auth'
 
 export default function LoginPage() {
@@ -11,18 +10,12 @@ export default function LoginPage() {
   const nav = useNavigate()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [agreed, setAgreed] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const summaryRef = useRef<HTMLDivElement>(null)
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault()
-    if (!agreed) {
-      setError('Agree to the Terms and Privacy Policy to continue.')
-      requestAnimationFrame(() => summaryRef.current?.focus())
-      return
-    }
     setLoading(true)
     setError(null)
     try {
@@ -77,7 +70,6 @@ export default function LoginPage() {
             <input id="login-email" value={email} onChange={e => setEmail(e.target.value)} autoComplete="username" />
             <label htmlFor="login-password">Password</label>
             <PasswordField id="login-password" value={password} onChange={setPassword} required />
-            <TermsAgree id="login-terms" checked={agreed} onChange={setAgreed} />
             <button className="catalog-generate-btn" disabled={loading} type="submit">
               {loading ? 'Signing in…' : 'Sign in'}
             </button>

@@ -47,6 +47,8 @@ DT_COLS = {
     "accepted_at",
     "reviewed_at",
     "deleted_at",
+    "terms_accepted_at",
+    "privacy_accepted_at",
 }
 
 SKIP_ON_WRITE: dict[type, set[str]] = {

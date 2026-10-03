@@ -14,15 +14,18 @@ import { FloorPlan, Room } from '../types/floorplan'
 import type { SceneDocument } from '../scene-graph/types'
 import View3D from './View3D'
 import RoomInteriorView from './RoomInteriorView'
-import ElevationView from './ElevationView'
-import SpecSchedule from './SpecSchedule'
-import CostPanel from './CostPanel'
 import DesignScore from './DesignScore'
 import ChatPanel from './ChatPanel'
 import { exportPdf } from '../api/client'
 import ScenePlan2D from './ScenePlan2D'
 import { loadLiveScene } from '../scene-graph/edit/load-scene'
 import { PlanAnnotation } from './planAnnotations'
+import { MeasurementInput } from './MeasurementInput'
+import { useFormat } from '../units/UnitsProvider'
+
+const DEFAULT_CEILING_M = 2.7432
+const ROOM_MIN_M = 1.8288
+const ROOM_MAX_M = 18.288
 
 interface Props {
   plan: FloorPlan
@@ -45,14 +48,11 @@ interface Props {
   existingScene?: SceneDocument | null
 }
 
-type MainTab = 'plan' | 'elevations' | 'spec' | 'cost' | 'score' | 'chat'
+type MainTab = 'plan' | 'score' | 'chat'
 export type ViewMode = '2d' | 'exterior' | 'dollhouse' | 'walkthrough' | 'topview'
 
 const TAB_LABELS: { id: MainTab; label: string }[] = [
   { id: 'plan', label: '2D / 3D Plan' },
-  { id: 'elevations', label: 'Elevations' },
-  { id: 'spec', label: 'Spec Schedule' },
-  { id: 'cost', label: 'Cost Estimate' },
   { id: 'score', label: 'Design Score' },
   { id: 'chat', label: 'AI Chat' },
 ]
@@ -119,11 +119,15 @@ export default function FloorPlanEditor({
   }, [selectedAnnotationIdProp, comments])
 
   const tabs = TAB_LABELS.filter(t => !(readOnly && t.id === 'chat'))
-  const primary = tabs.filter(t => !narrow || t.id === 'plan' || t.id === 'elevations' || t.id === 'spec')
-  const extra = tabs.filter(t => narrow && t.id !== 'plan' && t.id !== 'elevations' && t.id !== 'spec')
+  const primary = tabs.filter(t => !narrow || t.id === 'plan')
+  const extra = tabs.filter(t => narrow && t.id !== 'plan')
 
   const selectedRoom = plan.rooms.find(r => r.id === selectedId)
-  const ceilH = plan.ceilingHeight ?? 9
+  const fmt = useFormat()
+  const ceilH = plan.ceilingHeight || DEFAULT_CEILING_M
+  const livingAreaM2 = plan.rooms
+    .filter(r => !['garage', 'patio', 'deck', 'rear_patio', 'outdoor_living', 'front_porch'].includes(r.type))
+    .reduce((s, r) => s + r.width * r.height, 0)
   const viewOnlyCopy = readOnly && (role === 'CLIENT' || role === 'MAIN_ADMIN' || role === 'IT_PERSONNEL')
 
   return (
@@ -152,7 +156,7 @@ export default function FloorPlanEditor({
 
       <div className="editor-toolbar">
         <span className="editor-title">{plan.name}</span>
-        <span className="editor-ceiling-tag">{ceilH}ft ceilings</span>
+        <span className="editor-ceiling-tag">{fmt.length(ceilH)} ceilings</span>
         {role && <span className="editor-ceiling-tag">{role}</span>}
         {projectId && revisionId && (
           <span className="editor-ceiling-tag" title={`${projectId} / ${revisionId}`}>Rev</span>
@@ -200,7 +204,7 @@ export default function FloorPlanEditor({
           onClick={async () => {
             try {
               setExportError(null)
-              await exportPdf(plan)
+              await exportPdf(plan, fmt.unit)
             } catch {
               setExportError('Could not export PDF.')
             }
@@ -306,7 +310,7 @@ export default function FloorPlanEditor({
                     <div style={{ flex: 1 }}>
                       <div className="room-item-name">{room.name}</div>
                       <div className="room-item-size">
-                        {room.width.toFixed(0)}' × {room.height.toFixed(0)}' · {Math.round(room.width * room.height)} sq ft
+                        {fmt.dims(room.width, room.height)} · {fmt.area(room.width * room.height)}
                       </div>
                     </div>
                     <button
@@ -327,36 +331,30 @@ export default function FloorPlanEditor({
                 <div className="inspector-title">{readOnly ? 'Room' : 'Edit Room'}</div>
                 <div className="inspector-name">{selectedRoom.name}</div>
                 <div className="inspector-field">
-                  <label htmlFor="room-width">Width (ft)</label>
-                  <input
+                  <label htmlFor="room-width">Width ({fmt.unit})</label>
+                  <MeasurementInput
                     id="room-width"
-                    type="number"
-                    min={6}
-                    max={60}
+                    min={ROOM_MIN_M}
+                    max={ROOM_MAX_M}
                     value={selectedRoom.width}
                     disabled={readOnly}
-                    onChange={e => {
-                      const v = parseFloat(e.target.value)
-                      if (!isNaN(v) && v >= 6) updateRoomDim(selectedRoom.id, 'width', v)
-                    }}
+                    showUnit={false}
+                    onCommit={v => updateRoomDim(selectedRoom.id, 'width', v)}
                   />
                 </div>
                 <div className="inspector-field">
-                  <label htmlFor="room-depth">Depth (ft)</label>
-                  <input
+                  <label htmlFor="room-depth">Depth ({fmt.unit})</label>
+                  <MeasurementInput
                     id="room-depth"
-                    type="number"
-                    min={6}
-                    max={60}
+                    min={ROOM_MIN_M}
+                    max={ROOM_MAX_M}
                     value={selectedRoom.height}
                     disabled={readOnly}
-                    onChange={e => {
-                      const v = parseFloat(e.target.value)
-                      if (!isNaN(v) && v >= 6) updateRoomDim(selectedRoom.id, 'height', v)
-                    }}
+                    showUnit={false}
+                    onCommit={v => updateRoomDim(selectedRoom.id, 'height', v)}
                   />
                 </div>
-                <div className="inspector-area">{Math.round(selectedRoom.width * selectedRoom.height).toLocaleString()} sq ft</div>
+                <div className="inspector-area">{fmt.area(selectedRoom.width * selectedRoom.height)}</div>
                 <button type="button" className="view-interior-btn" onClick={() => setInteriorRoom(selectedRoom)}>
                   View Interior
                 </button>
@@ -368,33 +366,15 @@ export default function FloorPlanEditor({
               <div className="stat-row"><span>Rooms</span><span>{plan.rooms.length}</span></div>
               <div className="stat-row">
                 <span>Living area</span>
-                <span>{Math.round(plan.rooms.filter(r => !['garage','patio','deck','rear_patio','outdoor_living','front_porch'].includes(r.type)).reduce((s, r) => s + r.width * r.height, 0)).toLocaleString()} sq ft</span>
+                <span>{fmt.area(livingAreaM2)}</span>
               </div>
               <div className="stat-row">
                 <span>Footprint</span>
-                <span>{Math.round(plan.totalWidth)}' × {Math.round(plan.totalHeight)}'</span>
+                <span>{fmt.dims(plan.totalWidth, plan.totalHeight)}</span>
               </div>
-              <div className="stat-row"><span>Ceiling</span><span>{ceilH} ft</span></div>
+              <div className="stat-row"><span>Ceiling</span><span>{fmt.length(ceilH)}</span></div>
             </div>
           </div>
-        </div>
-      )}
-
-      {tab === 'elevations' && (
-        <div className="tab-content-scroll" role="tabpanel">
-          <ElevationView plan={plan} />
-        </div>
-      )}
-
-      {tab === 'spec' && (
-        <div className="tab-content-scroll" role="tabpanel">
-          <SpecSchedule plan={plan} />
-        </div>
-      )}
-
-      {tab === 'cost' && (
-        <div className="tab-content-scroll" role="tabpanel">
-          <CostPanel plan={plan} />
         </div>
       )}
 

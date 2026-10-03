@@ -1,6 +1,7 @@
 import type { Door, FloorPlan, PlanFurniture, PlanOpening, PlanWall, Room } from '../../types/floorplan'
 import type { Opening, Room as SceneRoom, SceneDocument, Wall } from '../types'
-import { mToFt } from '../units'
+import { METRIC } from '../../units/legacy'
+import { legacyFeetToMeters } from '../../units/measurement'
 
 const TYPE_TO_PLAN: Record<string, string> = {
   living_room: 'living_room',
@@ -48,17 +49,17 @@ function partsFromRoom(room: SceneRoom): Array<{ x: number; y: number; width: nu
   const raw = room.metadata?.parts
   if (Array.isArray(raw) && raw.length) {
     return raw.map((p: { x: number; y: number; width: number; height: number }) => ({
-      x: mToFt(p.x),
-      y: mToFt(p.y),
-      width: mToFt(p.width),
-      height: mToFt(p.height),
+      x: p.x,
+      y: p.y,
+      width: p.width,
+      height: p.height,
     }))
   }
   return [{
-    x: mToFt(room.position.x),
-    y: mToFt(room.position.y),
-    width: mToFt(room.dimensions.width),
-    height: mToFt(room.dimensions.height),
+    x: room.position.x,
+    y: room.position.y,
+    width: room.dimensions.width,
+    height: room.dimensions.height,
   }]
 }
 
@@ -66,32 +67,40 @@ function isVerticalWall(wall: Wall): boolean {
   return Math.abs(wall.end.y - wall.start.y) > Math.abs(wall.end.x - wall.start.x)
 }
 
+/** Envelope from scene metadata: `envelopeWidthM`, or legacy `envelopeWidthFt` (feet). */
+function envelopeFromExtra(extra: Record<string, unknown>, axis: 'Width' | 'Depth'): number | null {
+  const m = extra[`envelope${axis}M`]
+  if (typeof m === 'number') return m
+  const ft = extra[`envelope${axis}Ft`]
+  if (typeof ft === 'number') return legacyFeetToMeters(ft)
+  return null
+}
+
+/** SceneDocument v2 (meters) -> FloorPlan (meters, `units: "metric"`). */
 export function sceneDocumentToFloorPlan(scene: SceneDocument): FloorPlan {
-  const extra = scene.metadata.extra || {}
+  const extra = (scene.metadata.extra || {}) as Record<string, unknown>
   const rooms: Room[] = scene.rooms.map(room => {
     const type = planType(room)
-    const width = mToFt(room.dimensions.width)
-    const height = mToFt(room.dimensions.height)
     return {
       id: room.id,
       name: room.name,
       type,
-      x: mToFt(room.position.x),
-      y: mToFt(room.position.y),
-      width,
-      height,
+      x: room.position.x,
+      y: room.position.y,
+      width: room.dimensions.width,
+      height: room.dimensions.height,
       color: (typeof room.metadata?.color === 'string' && room.metadata.color) || COLORS[type] || '#dce0e8',
       footprint: room.polygon.length
         ? {
             type,
             parts: partsFromRoom(room),
             centroid: {
-              x: mToFt(room.position.x + room.dimensions.width / 2),
-              y: mToFt(room.position.y + room.dimensions.height / 2),
+              x: room.position.x + room.dimensions.width / 2,
+              y: room.position.y + room.dimensions.height / 2,
             },
             boundary: room.polygon.map((p, i, arr) => {
               const q = arr[(i + 1) % arr.length]
-              return { x1: mToFt(p.x), y1: mToFt(p.y), x2: mToFt(q.x), y2: mToFt(q.y) }
+              return { x1: p.x, y1: p.y, x2: q.x, y2: q.y }
             }),
           }
         : undefined,
@@ -100,10 +109,10 @@ export function sceneDocumentToFloorPlan(scene: SceneDocument): FloorPlan {
 
   const walls: PlanWall[] = scene.walls.map(wall => ({
     id: wall.id,
-    x1: mToFt(wall.start.x),
-    y1: mToFt(wall.start.y),
-    x2: mToFt(wall.end.x),
-    y2: mToFt(wall.end.y),
+    x1: wall.start.x,
+    y1: wall.start.y,
+    x2: wall.end.x,
+    y2: wall.end.y,
     kind: wallKind(wall),
     roomIds: [...wall.roomIds],
   }))
@@ -115,13 +124,13 @@ export function sceneDocumentToFloorPlan(scene: SceneDocument): FloorPlan {
       id: opening.id,
       wallId: opening.wallId,
       kind,
-      x: mToFt(opening.position.x),
-      y: mToFt(opening.position.y),
-      width: mToFt(opening.width),
-      height: mToFt(opening.height),
+      x: opening.position.x,
+      y: opening.position.y,
+      width: opening.width,
+      height: opening.height,
       isVertical: wall ? isVerticalWall(wall) : false,
       roomIds: (opening.metadata?.roomIds as string[] | undefined) || wall?.roomIds,
-      sillHeight: mToFt(opening.sillHeight),
+      sillHeight: opening.sillHeight,
     }
   })
 
@@ -141,31 +150,28 @@ export function sceneDocumentToFloorPlan(scene: SceneDocument): FloorPlan {
     id: item.id,
     roomId: item.roomId,
     kind: item.kind,
-    x: mToFt(item.position.x),
-    y: mToFt(item.position.y),
-    width: mToFt(item.dimensions.width),
-    depth: mToFt(item.dimensions.height),
+    x: item.position.x,
+    y: item.position.y,
+    width: item.dimensions.width,
+    depth: item.dimensions.height,
     rotation: item.rotation || 0,
     assetId: typeof item.metadata?.assetId === 'string' ? item.metadata.assetId : undefined,
   }))
 
   const xs = rooms.flatMap(r => [r.x, r.x + r.width])
   const ys = rooms.flatMap(r => [r.y, r.y + r.height])
-  const envelopeW = typeof extra.envelopeWidthFt === 'number'
-    ? extra.envelopeWidthFt
-    : xs.length ? Math.max(...xs) : mToFt(scene.site.width)
-  const envelopeD = typeof extra.envelopeDepthFt === 'number'
-    ? extra.envelopeDepthFt
-    : ys.length ? Math.max(...ys) : mToFt(scene.site.depth)
+  const envelopeW = envelopeFromExtra(extra, 'Width') ?? (xs.length ? Math.max(...xs) : scene.site.width)
+  const envelopeD = envelopeFromExtra(extra, 'Depth') ?? (ys.length ? Math.max(...ys) : scene.site.depth)
 
   const ceilingM = scene.walls[0]?.height || scene.floorData[0]?.height || 2.74
 
   return {
     id: (extra.planId as string) || scene.projectId,
     name: scene.projectId,
+    units: METRIC,
     totalWidth: envelopeW,
     totalHeight: envelopeD,
-    ceilingHeight: mToFt(ceilingM),
+    ceilingHeight: ceilingM,
     rooms,
     doors,
     walls,

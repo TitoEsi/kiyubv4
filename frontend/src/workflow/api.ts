@@ -1,6 +1,8 @@
 import axios from 'axios'
 import { FloorPlan } from '../types/floorplan'
 import { QuestionnaireData } from '../types/questionnaire'
+import type { MeasurementUnit } from '../units/measurement'
+import { normalizeCommentCoords, normalizeFloorPlan, normalizeQuestionnaire } from '../units/legacy'
 
 const BASE_URL = import.meta.env.VITE_API_URL
   ? `${import.meta.env.VITE_API_URL}/api`
@@ -17,6 +19,11 @@ api.interceptors.request.use(config => {
   return config
 })
 
+function metricPlan<T extends { floor_plan?: FloorPlan } | null | undefined>(item: T): T {
+  if (!item || !item.floor_plan) return item
+  return { ...item, floor_plan: normalizeFloorPlan(item.floor_plan) }
+}
+
 export interface WorkflowUser {
   id: string
   email: string
@@ -25,7 +32,13 @@ export interface WorkflowUser {
   suspended?: boolean
   deleted_at?: string | null
   full_name?: string | null
+  measurement_unit?: MeasurementUnit
   created_at?: string | null
+}
+
+export async function updatePreferences(measurement_unit: MeasurementUnit) {
+  const { data } = await api.patch('/auth/me/preferences', { measurement_unit })
+  return data as WorkflowUser
 }
 
 export interface Project {
@@ -71,6 +84,7 @@ export interface Comment {
   object_id?: string | null
   x?: number | null
   y?: number | null
+  coord_units?: string | null
   revision_id?: string | null
 }
 
@@ -97,6 +111,7 @@ export interface Invitation {
   accepted_user_id?: string | null
   token?: string
   invite_url?: string
+  existing_client?: boolean
 }
 
 export interface ArchitectClientRow {
@@ -136,7 +151,14 @@ export async function signup(email: string, password: string, role: string, invi
 }
 
 export async function completeClientAccount(email: string, password: string, invitation_token: string, full_name: string) {
-  const { data } = await api.post('/auth/signup', { email, password, invitation_token, full_name })
+  const { data } = await api.post('/auth/signup', {
+    email,
+    password,
+    invitation_token,
+    full_name,
+    accept_terms: true,
+    accept_privacy: true,
+  })
   return data as { token?: string; user: WorkflowUser; project?: Project | null }
 }
 
@@ -150,13 +172,10 @@ export async function listProjects() {
   return data as Project[]
 }
 
-export async function createProject(name: string, client_id?: string) {
-  const { data } = await api.post('/projects', { name, client_id })
-  return data as Project
-}
-
 export async function getProject(id: string) {
   const { data } = await api.get(`/projects/${id}`)
+  data.current_revision = metricPlan(data.current_revision)
+  data.submitted_revision = metricPlan(data.submitted_revision)
   return data as {
     project: Project
     document: {
@@ -185,11 +204,13 @@ export async function saveBrief(id: string, questionnaire: QuestionnaireData, sp
 
 export async function getBrief(id: string) {
   const { data } = await api.get(`/projects/${id}/brief`)
+  data.questionnaire = normalizeQuestionnaire(data.questionnaire)
   return data as { project: Project; questionnaire: QuestionnaireData; specification: Record<string, unknown> }
 }
 
 export async function generateProject(id: string) {
   const { data } = await api.post(`/projects/${id}/generate`, undefined, { timeout: 120_000 })
+  data.candidates = (data.candidates || []).map(metricPlan)
   return data as {
     job: { id: string; source_revision_id: string | null }
     candidates: Candidate[]
@@ -200,7 +221,7 @@ export async function generateProject(id: string) {
 
 export async function listCandidates(id: string) {
   const { data } = await api.get(`/projects/${id}/candidates`)
-  return data as Candidate[]
+  return (data as Candidate[]).map(metricPlan)
 }
 
 export async function selectCandidate(projectId: string, candidateId: string) {
@@ -210,17 +231,17 @@ export async function selectCandidate(projectId: string, candidateId: string) {
 
 export async function acceptCandidate(projectId: string, candidateId: string) {
   const { data } = await api.post(`/projects/${projectId}/candidates/${candidateId}/accept`)
-  return data as Revision
+  return metricPlan(data as Revision)
 }
 
 export async function listRevisions(id: string) {
   const { data } = await api.get(`/projects/${id}/revisions`)
-  return data as Revision[]
+  return (data as Revision[]).map(metricPlan)
 }
 
 export async function getRevision(id: string) {
   const { data } = await api.get(`/revisions/${id}`)
-  return data as Revision
+  return metricPlan(data as Revision)
 }
 
 export async function saveDesign(
@@ -234,7 +255,7 @@ export async function saveDesign(
     expected_revision_id,
     scene_document,
   })
-  return data as Revision
+  return metricPlan(data as Revision)
 }
 
 export async function saveWorkingDesign(projectId: string, scene_document: unknown) {
@@ -244,7 +265,7 @@ export async function saveWorkingDesign(projectId: string, scene_document: unkno
 
 export async function listComments(id: string) {
   const { data } = await api.get(`/projects/${id}/comments`)
-  return data as Comment[]
+  return (data as Comment[]).map(normalizeCommentCoords)
 }
 
 export async function addComment(
@@ -253,7 +274,7 @@ export async function addComment(
 ) {
   const body = typeof payload === 'string' ? { body: payload } : payload
   const { data } = await api.post(`/projects/${id}/comments`, body)
-  return data as Comment
+  return normalizeCommentCoords(data as Comment)
 }
 
 export async function patchComment(
@@ -262,7 +283,7 @@ export async function patchComment(
   patch: { body?: string; object_id?: string | null; x?: number | null; y?: number | null },
 ) {
   const { data } = await api.patch(`/projects/${projectId}/comments/${commentId}`, patch)
-  return data as Comment
+  return normalizeCommentCoords(data as Comment)
 }
 
 export async function deleteComment(projectId: string, commentId: string) {
@@ -275,11 +296,6 @@ export async function submitReview(
 ) {
   const { data } = await api.post(`/projects/${id}/submit-review`, payload || {})
   return data as Project & { submitted_revision_id?: string; version?: number }
-}
-
-export async function requestRevision(id: string) {
-  const { data } = await api.post(`/projects/${id}/request-revision`)
-  return data as Project
 }
 
 export async function resumeProject(id: string) {
@@ -299,7 +315,7 @@ export async function architectApprove(id: string) {
 
 export async function publishProject(id: string) {
   const { data } = await api.post(`/projects/${id}/publish`)
-  return data as Revision
+  return metricPlan(data as Revision)
 }
 
 export async function listNotifications() {
@@ -361,6 +377,7 @@ export async function getInvitationByToken(token: string) {
   return data as {
     email: string
     project_name: string | null
+    architect_name?: string | null
     status: string
     expires_at: string | null
     needs_registration: boolean
@@ -458,6 +475,10 @@ export async function getArchitectApplicationByToken(token: string) {
 }
 
 export async function completeArchitectApplication(token: string, password: string) {
-  const { data } = await api.post(`/architect-applications/by-token/${token}/complete`, { password })
+  const { data } = await api.post(`/architect-applications/by-token/${token}/complete`, {
+    password,
+    accept_terms: true,
+    accept_privacy: true,
+  })
   return data as { token?: string; user: WorkflowUser }
 }

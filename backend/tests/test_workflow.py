@@ -15,8 +15,10 @@ from fastapi.testclient import TestClient
 from workflow import db as wfdb
 from workflow.seed import seed_users
 from workflow.api import router
-from workflow.models import DesignDocument, SiteConstraint
+from workflow.models import DesignDocument, SiteConstraint, User
 from workflow.state import apply_transition, IllegalTransition
+
+ACCEPT = {"accept_terms": True, "accept_privacy": True}
 
 BRIEF = {
     "site": {"lotShape": "rectangle", "lotWidth": 20, "lotDepth": 30},
@@ -79,6 +81,7 @@ def provision(client: TestClient) -> dict:
         json={
             "email": email,
             "password": "lotpass",
+            **ACCEPT,
             "invitation_token": invited.json()["token"],
             "full_name": "Lot Client",
         },
@@ -283,6 +286,7 @@ def test_unassigned_client_cannot_generate(client):
         json={
             "email": "other@kiyub.local",
             "password": "otherpass",
+            **ACCEPT,
             "invitation_token": invited.json()["token"],
             "full_name": "Other Client",
         },
@@ -353,7 +357,7 @@ def test_comments_client_architect(client):
     assert len(listed2) == 2
 
 
-def test_request_revision_transition(client):
+def test_request_revision_endpoint_removed(client):
     ctx = provision(client)
     gen = generate(client, ctx)
     pid = ctx["project"]["id"]
@@ -362,8 +366,7 @@ def test_request_revision_transition(client):
     client.post(f"/api/projects/{pid}/candidates/{gen['candidates'][0]['id']}/accept", headers=h_arch)
     assert post_architect_review(client, pid, h_arch).status_code == 200
     r = client.post(f"/api/projects/{pid}/request-revision", headers=h_cli)
-    assert r.status_code == 200
-    assert r.json()["status"] == "FOR_REVISION"
+    assert r.status_code == 404
 
 
 def test_approve_and_publish(client):
@@ -419,7 +422,7 @@ def test_unapproved_architect_login_blocked(client):
     token = approved.json()["token"]
     done = client.post(
         f"/api/architect-applications/by-token/{token}/complete",
-        json={"password": "pendingpass", "role": "MAIN_ADMIN"},
+        json={"password": "pendingpass", "role": "MAIN_ADMIN", **ACCEPT},
     )
     assert done.status_code == 200, done.text
     assert done.json()["user"]["role"] == "ARCHITECT"
@@ -525,6 +528,7 @@ def test_invitation_accepts_and_creates_project(client):
             "email": "other@kiyub.local",
             "password": "otherpass",
             "role": "CLIENT",
+            **ACCEPT,
             "invitation_token": token,
         },
     )
@@ -534,6 +538,7 @@ def test_invitation_accepts_and_creates_project(client):
         json={
             "email": "invited@kiyub.local",
             "password": "invitepass",
+            **ACCEPT,
             "invitation_token": token,
             "full_name": "Invited Client",
         },
@@ -582,7 +587,7 @@ def test_invitation_accepts_and_creates_project(client):
     assert approved.status_code == 200
     client.post(
         f"/api/architect-applications/by-token/{approved.json()['token']}/complete",
-        json={"password": "archpass"},
+        json={"password": "archpass", **ACCEPT},
     )
     other_login = login(client, "otherarch@kiyub.local", "archpass")
     denied = client.get(f"/api/projects/{pid}", headers=auth(other_login["token"]))
@@ -668,7 +673,7 @@ def test_seed_collaboration_uses_existing_users(client):
     assert ready_detail["permissions"]["canOpenArchitectCanvas"] is True
     comments = client.get(f"/api/projects/{ready['id']}/comments", headers=h_arch).json()
     assert any(
-        c["author_role"] == "CLIENT" and c["object_id"] == "living-0" and c["x"] == 9.0
+        c["author_role"] == "CLIENT" and c["object_id"] == "living-0" and abs(c["x"] - 9.0 * 0.3048) < 1e-9
         for c in comments
     )
     invites = client.get(f"/api/projects/{ready['id']}/invitations", headers=h_arch).json()
@@ -895,3 +900,179 @@ def test_architect_review_snapshot_is_client_visible(client):
     assert client_scene_submit.status_code == 403
     client_again = client.post(f"/api/projects/{pid}/submit-review", headers=h_cli)
     assert client_again.status_code == 409
+
+
+def test_returning_client_accepts_isolated_project(client):
+    ctx = provision(client)
+    email = ctx["tokens"]["client"]["user"]["email"]
+    user_id = ctx["tokens"]["client"]["user"]["id"]
+    pid_a = ctx["project"]["id"]
+    h_arch = auth(ctx["tokens"]["architect"]["token"])
+    h_cli = auth(ctx["tokens"]["client"]["token"])
+    gen_a = generate(client, ctx)
+    accepted_a = client.post(
+        f"/api/projects/{pid_a}/candidates/{gen_a['candidates'][0]['id']}/accept",
+        headers=h_arch,
+    )
+    assert accepted_a.status_code == 200, accepted_a.text
+    rev_a = accepted_a.json()["id"]
+    detail_a = client.get(f"/api/projects/{pid_a}", headers=h_cli).json()
+    assert detail_a["document"]["current_revision_id"] == rev_a
+
+    invited = client.post(
+        "/api/invitations",
+        json={"email": email, "project_name": "Lot B"},
+        headers=h_arch,
+    )
+    assert invited.status_code == 200, invited.text
+    assert invited.json()["existing_client"] is True
+    token = invited.json()["token"]
+    public = client.get(f"/api/invitations/by-token/{token}")
+    assert public.json()["needs_registration"] is False
+    assert public.json()["project_name"] == "Lot B"
+
+    seed_client = ids(client)["client"]
+    wrong = client.post(f"/api/invitations/by-token/{token}/accept", headers=auth(seed_client["token"]))
+    assert wrong.status_code == 403
+    still_pending = client.get(f"/api/invitations/by-token/{token}").json()
+    assert still_pending["status"] == "PENDING"
+
+    accepted = client.post(f"/api/invitations/by-token/{token}/accept", headers=h_cli)
+    assert accepted.status_code == 200, accepted.text
+    pid_b = accepted.json()["project"]["id"]
+    assert pid_b != pid_a
+    assert accepted.json()["project"]["client_id"] == user_id
+    assert accepted.json()["project"]["status"] == "DRAFT"
+
+    detail_b = client.get(f"/api/projects/{pid_b}", headers=h_cli).json()
+    assert detail_b["document"]["current_revision_id"] is None
+    assert detail_b["current_revision"] is None
+    architect_b = client.get(f"/api/projects/{pid_b}", headers=h_arch).json()
+    assert architect_b["document"].get("working_scene_document") in (None, {})
+
+    still_a = client.get(f"/api/projects/{pid_a}", headers=h_cli).json()
+    assert still_a["document"]["current_revision_id"] == rev_a
+
+    brief = client.put(
+        f"/api/projects/{pid_b}/brief",
+        json={"questionnaire": BRIEF, "specification": {}},
+        headers=h_cli,
+    )
+    assert brief.status_code == 200, brief.text
+    gen_b = client.post(f"/api/projects/{pid_b}/generate", headers=h_cli)
+    assert gen_b.status_code == 200, gen_b.text
+    accepted_b = client.post(
+        f"/api/projects/{pid_b}/candidates/{gen_b.json()['candidates'][0]['id']}/accept",
+        headers=h_arch,
+    )
+    assert accepted_b.status_code == 200, accepted_b.text
+    after_a = client.get(f"/api/projects/{pid_a}", headers=h_cli).json()
+    after_b = client.get(f"/api/projects/{pid_b}", headers=h_cli).json()
+    assert after_a["document"]["current_revision_id"] == rev_a
+    assert after_b["document"]["current_revision_id"] == accepted_b.json()["id"]
+    assert after_b["document"]["current_revision_id"] != rev_a
+
+    db = wfdb.SessionLocal()
+    try:
+        assert db.query(User).filter(User.email == email).count() == 1
+        docs = db.query(DesignDocument).filter(DesignDocument.project_id.in_([pid_a, pid_b])).all()
+        assert {d.project_id for d in docs} == {pid_a, pid_b}
+    finally:
+        db.close()
+
+
+def test_client_floor_plan_follows_accepted_candidate_after_review(client):
+    ctx = provision(client)
+    gen = generate(client, ctx)
+    pid = ctx["project"]["id"]
+    h_arch = auth(ctx["tokens"]["architect"]["token"])
+    h_cli = auth(ctx["tokens"]["client"]["token"])
+    first = client.post(f"/api/projects/{pid}/candidates/{gen['candidates'][0]['id']}/accept", headers=h_arch)
+    assert first.status_code == 200, first.text
+    submitted = post_architect_review(client, pid, h_arch, review_scene("OLD", 2.0))
+    assert submitted.status_code == 200, submitted.text
+    checking = client.get(f"/api/projects/{pid}", headers=h_cli).json()
+    assert checking["project"]["status"] == "FOR_CHECKING"
+    assert checking["submitted_revision"]["scene_document"]["rooms"][0]["name"] == "OLD"
+
+    later = gen["candidates"][1] if len(gen["candidates"]) > 1 else generate(client, ctx)["candidates"][0]
+    accepted = client.post(f"/api/projects/{pid}/candidates/{later['id']}/accept", headers=h_arch)
+    assert accepted.status_code == 200, accepted.text
+    after = client.get(f"/api/projects/{pid}", headers=h_cli).json()
+    assert after["submitted_revision"] is None
+    assert after["current_revision"]["id"] == accepted.json()["id"]
+    assert after["current_revision"]["id"] != checking["submitted_revision"]["id"]
+    if after["current_revision"].get("scene_document"):
+        assert after["current_revision"]["scene_document"]["rooms"][0]["name"] != "OLD"
+
+
+def test_publish_uses_reviewed_scene_not_older_current(client):
+    ctx = provision(client)
+    gen = generate(client, ctx)
+    pid = ctx["project"]["id"]
+    h_arch = auth(ctx["tokens"]["architect"]["token"])
+    h_cli = auth(ctx["tokens"]["client"]["token"])
+    accepted = client.post(f"/api/projects/{pid}/candidates/{gen['candidates'][0]['id']}/accept", headers=h_arch)
+    assert accepted.status_code == 200, accepted.text
+    older_id = accepted.json()["id"]
+    reviewed_scene = review_scene("PUBLISHED-CURRENT", 4.5)
+    reviewed_plan = {"name": "PUBLISHED-CURRENT", "units": "metric", "rooms": [{"id": "r-PUBLISHED-CURRENT", "name": "PUBLISHED-CURRENT", "width": 4.5}]}
+    submitted = client.post(
+        f"/api/projects/{pid}/submit-review",
+        json={"scene_document": reviewed_scene, "floor_plan": reviewed_plan},
+        headers=h_arch,
+    )
+    assert submitted.status_code == 200, submitted.text
+    review_id = submitted.json()["submitted_revision_id"]
+    assert review_id
+    approved = client.post(f"/api/projects/{pid}/client-approve", headers=h_cli)
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["revision_id"] == review_id
+    assert approved.json()["revision_id"] != older_id
+    arch = client.post(f"/api/projects/{pid}/architect-approve", headers=h_arch)
+    assert arch.status_code == 200, arch.text
+    published = client.post(
+        f"/api/projects/{pid}/publish",
+        json={"scene_document": review_scene("STALE-OVERRIDE", 1.0), "floor_plan": {"name": "STALE-OVERRIDE"}},
+        headers=h_arch,
+    )
+    assert published.status_code == 200, published.text
+    payload = published.json()
+    assert payload["source_type"] == "PUBLISHED"
+    assert payload["source_revision_id"] == review_id
+    assert payload["source_revision_id"] != older_id
+    assert payload["scene_document"] == reviewed_scene
+    assert payload["floor_plan"] == reviewed_plan
+    detail = client.get(f"/api/projects/{pid}", headers=h_cli).json()
+    assert detail["project"]["status"] == "PUBLISHED"
+    assert detail["document"]["stage"] == "FINAL_DESIGN"
+    assert detail["current_revision"]["id"] == payload["id"]
+    assert detail["current_revision"]["scene_document"] == reviewed_scene
+    assert detail["current_revision"]["floor_plan"] == reviewed_plan
+    assert detail["submitted_revision"] is None
+    architect_detail = client.get(f"/api/projects/{pid}", headers=h_arch).json()
+    assert architect_detail["current_revision"]["scene_document"] == reviewed_scene
+    assert "working_scene_document" not in architect_detail["document"]
+
+
+def test_architect_approve_requires_client_approval_on_latest_review(client):
+    ctx = provision(client)
+    gen = generate(client, ctx)
+    pid = ctx["project"]["id"]
+    h_arch = auth(ctx["tokens"]["architect"]["token"])
+    h_cli = auth(ctx["tokens"]["client"]["token"])
+    client.post(f"/api/projects/{pid}/candidates/{gen['candidates'][0]['id']}/accept", headers=h_arch)
+    first = post_architect_review(client, pid, h_arch, review_scene("FIRST", 2.0))
+    assert first.status_code == 200, first.text
+    assert client.post(f"/api/projects/{pid}/client-approve", headers=h_cli).status_code == 200
+    second = post_architect_review(client, pid, h_arch, review_scene("SECOND", 4.5))
+    assert second.status_code == 200, second.text
+    blocked = client.post(f"/api/projects/{pid}/architect-approve", headers=h_arch)
+    assert blocked.status_code == 409
+    assert client.post(f"/api/projects/{pid}/client-approve", headers=h_cli).status_code == 200
+    allowed = client.post(f"/api/projects/{pid}/architect-approve", headers=h_arch)
+    assert allowed.status_code == 200, allowed.text
+    published = client.post(f"/api/projects/{pid}/publish", headers=h_arch)
+    assert published.status_code == 200, published.text
+    assert published.json()["source_revision_id"] == second.json()["submitted_revision_id"]
+    assert published.json()["scene_document"]["rooms"][0]["name"] == "SECOND"

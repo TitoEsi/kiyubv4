@@ -21,7 +21,7 @@ const plan = {
 } as FloorPlan
 
 describe('planAnnotations', () => {
-  it('uses stored plan-feet coordinates', () => {
+  it('uses stored plan-meter coordinates', () => {
     expect(annotationPoint({ id: '1', body: 'Move door', author_id: 'c1', created_at: null, x: 4, y: 6, object_id: 'living' }, plan))
       .toEqual({ x: 4, y: 6 })
   })

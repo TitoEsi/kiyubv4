@@ -1,11 +1,17 @@
-"""Persist SceneDocument v2.0 alongside FloorPlan. Mirrors the TS converter at a persistence level."""
+"""Persist the workflow scene summary alongside FloorPlan.
+
+All geometry is meters (``"units": "metric"``). Input plans are normalized first, so a
+feet-native engine plan is converted once at this boundary.
+"""
 from __future__ import annotations
 
 from typing import Any
 
+from generation_units import METRIC, normalize_floor_plan
+
 
 def floor_plan_to_scene_document(plan: dict[str, Any] | None) -> dict[str, Any]:
-    plan = plan or {}
+    plan = normalize_floor_plan(plan or {}) or {}
     rooms = plan.get("rooms") or []
     walls = plan.get("walls") or []
     doors = plan.get("doors") or []
@@ -14,13 +20,13 @@ def floor_plan_to_scene_document(plan: dict[str, Any] | None) -> dict[str, Any]:
     metadata = plan.get("metadata") or {}
     envelope = plan.get("envelope") or {}
     lot = envelope.get("lot") or {}
-    width = float(envelope.get("width") or lot.get("width") or 0)
-    depth = float(envelope.get("depth") or lot.get("depth") or 0)
+    width = float(envelope.get("width") or lot.get("width") or plan.get("totalWidth") or 0)
+    depth = float(envelope.get("depth") or lot.get("depth") or plan.get("totalHeight") or 0)
     return {
         "schemaVersion": "2.0",
         "source": "kiyub-workflow",
         "planId": plan.get("id"),
-        "units": "ft",
+        "units": METRIC,
         "envelope": {"width": width, "depth": depth},
         "rooms": [
             {

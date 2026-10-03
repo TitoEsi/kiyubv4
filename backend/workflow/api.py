@@ -20,8 +20,10 @@ from .schemas import (
     InquiryCreate,
     InvitationCreate,
     LoginBody,
+    PreferencesBody,
     ProjectAssign,
     ProjectCreate,
+    PublishBody,
     RegisterBody,
     SubmitReviewBody,
     WorkingDesignBody,
@@ -63,7 +65,15 @@ def login(body: LoginBody, db: Session = Depends(get_db)):
 def signup(body: RegisterBody, db: Session = Depends(get_db)):
     email = body.email.lower().strip()
     if body.invitation_token:
-        result = svc.complete_client_account(db, email, body.password, body.invitation_token, body.full_name)
+        result = svc.complete_client_account(
+            db,
+            email,
+            body.password,
+            body.invitation_token,
+            body.full_name,
+            accept_terms=body.accept_terms,
+            accept_privacy=body.accept_privacy,
+        )
         user = result["user"]
         return {
             "token": issue_session_token(user, body.password),
@@ -76,6 +86,13 @@ def signup(body: RegisterBody, db: Session = Depends(get_db)):
 @router.get("/auth/me")
 def me(user: User = Depends(get_current_user)):
     return svc.serialize_user(user)
+
+
+@router.patch("/auth/me/preferences")
+def update_preferences(
+    body: PreferencesBody, user: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
+    return svc.update_preferences(db, user, body.measurement_unit)
 
 
 @router.get("/projects")
@@ -197,11 +214,6 @@ def submit_review(
     )
 
 
-@router.post("/projects/{project_id}/request-revision")
-def request_revision(project_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return svc.project_as_dict(svc.request_revision(db, actor_from(user), project_id))
-
-
 @router.post("/projects/{project_id}/resume")
 def resume(project_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return svc.project_as_dict(svc.resume_after_revision(db, actor_from(user), project_id))
@@ -218,8 +230,19 @@ def architect_approve(project_id: str, user: User = Depends(get_current_user), d
 
 
 @router.post("/projects/{project_id}/publish")
-def publish(project_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    rev = svc.publish_project(db, actor_from(user), project_id)
+def publish(
+    project_id: str,
+    body: PublishBody | None = Body(default=None),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    rev = svc.publish_project(
+        db,
+        actor_from(user),
+        project_id,
+        scene_document=body.scene_document if body else None,
+        floor_plan=body.floor_plan if body else None,
+    )
     return svc.serialize_revision(rev, current_id=rev.id, include_payload=True)
 
 
@@ -360,7 +383,9 @@ def architect_application_by_token(token: str, db: Session = Depends(get_db)):
 
 @router.post("/architect-applications/by-token/{token}/complete")
 def complete_architect_application(token: str, body: ArchitectApplicationComplete, db: Session = Depends(get_db)):
-    result = svc.complete_architect_application(db, token, body.password)
+    result = svc.complete_architect_application(
+        db, token, body.password, accept_terms=body.accept_terms, accept_privacy=body.accept_privacy
+    )
     user = db.get(User, result["user"]["id"])
     return {
         "token": issue_session_token(user, body.password) if user else None,

@@ -1343,46 +1343,6 @@ html[data-theme="light"] .catalog-validation-warning {
   color: #93c5fd;
 }
 
-/* ─── Elevation View ──────────────────────────────────── */
-
-.elevation-wrap {
-  background: var(--surface);
-  border-radius: 4px;
-  overflow: hidden;
-  box-shadow: none;
-}
-
-.elev-tabs {
-  display: flex;
-  gap: 0;
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
-  padding: 10px 20px;
-  gap: 6px;
-}
-
-.elev-tab {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 5px 14px;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  color: var(--text2);
-  transition: all 0.12s;
-}
-
-.elev-tab.active {
-  background: var(--paper);
-  color: var(--ink);
-  border-color: var(--paper);
-}
-
-.elevation-svg {
-  display: block;
-}
-
 /* ─── Electrical Legend ───────────────────────────────── */
 
 .elec-legend {
@@ -1415,290 +1375,6 @@ html[data-theme="light"] .catalog-validation-warning {
   height: 10px;
   border-radius: 50%;
   flex-shrink: 0;
-}
-
-/* ─── Spec Schedule ───────────────────────────────────── */
-
-.spec-wrap {
-  background: var(--surface);
-  border-radius: 4px;
-  overflow: hidden;
-  box-shadow: none;
-}
-
-.spec-header {
-  padding: 20px 24px 16px;
-  border-bottom: 1px solid var(--border);
-}
-
-.spec-header h3 {
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--text);
-}
-
-.spec-meta {
-  font-size: 12px;
-  color: var(--text2);
-  margin-top: 4px;
-}
-
-.spec-table-wrap {
-  overflow-x: auto;
-}
-
-.spec-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-}
-
-.spec-table th {
-  text-align: left;
-  padding: 8px 12px;
-  background: var(--bg);
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
-  color: var(--text2);
-  border-bottom: 1px solid var(--border);
-  white-space: nowrap;
-}
-
-.spec-table td {
-  padding: 9px 12px;
-  border-bottom: 1px solid var(--border);
-  color: var(--text);
-  vertical-align: top;
-}
-
-.spec-table tr:hover td {
-  background: var(--fill);
-}
-
-.spec-num {
-  color: var(--text2);
-  font-weight: 500;
-}
-
-.spec-name {
-  font-weight: 600;
-}
-
-.spec-type {
-  color: var(--text2);
-  text-transform: capitalize;
-}
-
-.spec-area {
-  font-weight: 600;
-}
-
-.spec-finish {
-  font-size: 11px;
-  color: var(--text2);
-  max-width: 180px;
-}
-
-.spec-total td {
-  background: var(--bg);
-  font-weight: 600;
-}
-
-.spec-notes {
-  padding: 16px 24px;
-  border-top: 1px solid var(--border);
-  font-size: 12px;
-  color: var(--text2);
-  line-height: 1.6;
-}
-
-.spec-notes strong {
-  color: var(--text);
-  display: block;
-  margin-bottom: 6px;
-}
-
-.spec-notes ul {
-  padding-left: 18px;
-}
-
-.spec-notes li {
-  margin-bottom: 3px;
-}
-
-/* ─── Cost Panel ──────────────────────────────────────── */
-
-.cost-wrap {
-  background: var(--surface);
-  border-radius: 4px;
-  overflow: hidden;
-  box-shadow: none;
-  padding: 0 0 24px;
-}
-
-.cost-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 20px 24px 16px;
-  border-bottom: 1px solid var(--border);
-}
-
-.cost-header h3 {
-  font-size: 16px;
-  font-weight: 700;
-}
-
-.region-select {
-  width: auto;
-  padding: 6px 28px 6px 10px;
-  font-size: 12px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--text);
-  cursor: pointer;
-  appearance: none;
-  background-image: var(--select-chevron);
-  background-repeat: no-repeat;
-  background-position: right 8px center;
-}
-
-.cost-loading {
-  padding: 40px;
-  text-align: center;
-  color: var(--text2);
-  font-size: 13px;
-}
-
-.cost-summary-row {
-  display: flex;
-  gap: 16px;
-  padding: 20px 24px;
-}
-
-.cost-card {
-  flex: 1;
-  border-radius: 0;
-  padding: 16px;
-  text-align: center;
-  border: 1px solid var(--border);
-}
-
-.cost-card-low {
-  background: rgba(22, 163, 74, 0.12);
-  border-color: rgba(74, 222, 128, 0.35);
-}
-
-.cost-card-mid {
-  background: rgba(202, 138, 4, 0.12);
-  border-color: rgba(250, 204, 21, 0.35);
-}
-
-.cost-card-high {
-  background: rgba(234, 88, 12, 0.12);
-  border-color: rgba(251, 146, 60, 0.35);
-}
-
-.cost-card-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text2);
-  margin-bottom: 6px;
-}
-
-.cost-card-total {
-  font-size: 22px;
-  font-weight: 800;
-  color: var(--text);
-}
-
-.cost-card-psf {
-  font-size: 11px;
-  color: var(--text2);
-  margin-top: 4px;
-}
-
-.cost-section-title {
-  padding: 4px 24px 8px;
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 1.4px;
-  color: var(--text2);
-}
-
-.cost-table-wrap {
-  overflow-x: auto;
-  padding: 0 24px;
-  margin-bottom: 16px;
-}
-
-.cost-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-}
-
-.cost-table th {
-  text-align: left;
-  padding: 7px 10px;
-  background: var(--bg);
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
-  color: var(--text2);
-  border-bottom: 1px solid var(--border);
-}
-
-.cost-table td {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
-  color: var(--text);
-}
-
-.cost-table tr:hover td {
-  background: var(--fill);
-}
-
-.cost-mid {
-  font-weight: 700;
-  color: var(--accent);
-}
-
-.cost-fixed-grid {
-  padding: 0 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 16px;
-}
-
-.cost-fixed-row {
-  display: flex;
-  justify-content: space-between;
-  font-size: 12px;
-  padding: 7px 10px;
-  background: var(--bg);
-  border-radius: 6px;
-}
-
-.cost-fixed-label {
-  color: var(--text2);
-}
-
-.cost-disclaimer {
-  margin: 0 24px;
-  font-size: 11px;
-  color: var(--text2);
-  line-height: 1.5;
-  padding: 10px 12px;
-  background: var(--bg);
-  border-radius: 6px;
-  border: 1px solid var(--border);
 }
 
 /* ─── Design Score ────────────────────────────────────── */
@@ -3147,17 +2823,40 @@ a.back-btn {
   border-bottom: 2px solid var(--accent);
 }
 
-.wf-scratch {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: #fde68a;
-}
-
 .wf-user {
   font-size: var(--font-size-xs);
   color: var(--color-muted-on-dark);
+}
+
+.unit-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-xs);
+  color: var(--color-muted-on-dark);
+}
+
+.unit-select .catalog-select {
+  width: auto;
+}
+
+.measurement-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.measurement-input-unit {
+  font-size: 11px;
+  color: var(--text2);
+}
+
+.catalog-size-control .measurement-input input {
+  width: 72px;
+  background: var(--fill);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 4px 6px;
 }
 
 .wf-body {

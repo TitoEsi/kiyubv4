@@ -6,9 +6,9 @@ import { FloorPlan, roomBoundary, roomCentroid, roomParts } from '../types/floor
 import type { SceneDocument } from '../scene-graph/types'
 import { sceneDocumentToFloorPlan } from '../scene-graph/adapters/scene-document-to-floorplan'
 import { SceneBuilding, sceneBuildingBounds } from './scene-3d-meshes'
-import { mToFt } from '../scene-graph/units'
+import { normalizeFloorPlan } from '../units/legacy'
 import {
-  VIEW3D_SCALE,
+  WORLD_UNITS_PER_METER,
   buildingBounds,
   viewCameraConfig,
   walkStartPosition,
@@ -16,11 +16,19 @@ import {
   type ViewCameraConfig,
 } from './view3d-camera'
 
-const S = VIEW3D_SCALE
+/** Plan meters -> world units. */
+const S = WORLD_UNITS_PER_METER
 type Mode = View3DMode
 
 const WALL_COLOR = '#e2e6ec'
-const WT = 0.022  // wall thickness
+const WT = 0.022  // wall thickness, world units
+const DEFAULT_CEILING_M = 2.7432
+const DOOR_WIDTH_M = 0.9144
+/** Rooms whose y falls in the same band share one roof section. */
+const ROOF_ROW_BAND_M = 0.6096
+/** Walkthrough keeps the camera this far inside room edges. */
+const WALK_WALL_MARGIN_M = 0.15
+const WALK_DOOR_DEPTH_M = 0.3048
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SHARED UTILITIES
@@ -149,7 +157,7 @@ function ArchitecturalRoof({ plan, wallH }: { plan: FloorPlan; wallH: number }) 
   // Group rooms into row-based sub-roofs for more realistic complex roofline
   const rowMap: Map<number, typeof rooms> = new Map()
   for (const room of rooms) {
-    const key = Math.round(room.y / 2) * 2
+    const key = Math.round(room.y / ROOF_ROW_BAND_M)
     if (!rowMap.has(key)) rowMap.set(key, [])
     rowMap.get(key)!.push(room)
   }
@@ -342,7 +350,7 @@ function DoorOpenings({ doors, wallH }: { doors: FloorPlan['doors']; wallH: numb
       {doors.map((door, i) => {
         const dx = door.x * S
         const dz = door.y * S
-        const dw = 3 * S // Standard 3ft door
+        const dw = DOOR_WIDTH_M * S
         return (
           <group key={i} position={[dx, 0, dz]}>
             {/* Door frame */}
@@ -464,24 +472,25 @@ function FirstPersonController({ plan, wallH }: { plan: FloorPlan; wallH: number
 
       // Collision helper: find if point is inside a room OR a door
       const isPassable = (tx: number, tz: number) => {
-        const ftX = tx / S
-        const ftY = tz / S
-        
-        // 1. Check if inside any room with a small 0.5ft wall margin
-        const insideRoom = plan.rooms.some(r => 
-          ftX >= r.x + 0.5 && ftX <= r.x + r.width - 0.5 &&
-          ftY >= r.y + 0.5 && ftY <= r.y + r.height - 0.5
+        const mX = tx / S
+        const mY = tz / S
+        const margin = WALK_WALL_MARGIN_M
+
+        // 1. Check if inside any room, keeping a small margin from the walls
+        const insideRoom = plan.rooms.some(r =>
+          mX >= r.x + margin && mX <= r.x + r.width - margin &&
+          mY >= r.y + margin && mY <= r.y + r.height - margin
         )
         if (insideRoom) return true
 
         // 2. Check if inside a door opening
         const nearDoor = plan.doors.some(d => {
           const dx = d.x, dy = d.y
-          const dSize = 1.5 // 3ft wide door = 1.5ft radius
+          const half = DOOR_WIDTH_M / 2
           if (d.isVertical) {
-            return Math.abs(ftX - dx) < 1.0 && Math.abs(ftY - dy) < dSize
+            return Math.abs(mX - dx) < WALK_DOOR_DEPTH_M && Math.abs(mY - dy) < half
           } else {
-            return Math.abs(ftY - dy) < 1.0 && Math.abs(ftX - dx) < dSize
+            return Math.abs(mY - dy) < WALK_DOOR_DEPTH_M && Math.abs(mX - dx) < half
           }
         })
         return nearDoor
@@ -576,7 +585,7 @@ function WalkthroughHUD({ plan }: { plan: FloorPlan }) {
               key={room.id}
               x={room.x} y={room.y}
               width={room.width} height={room.height}
-              fill={room.color} stroke="#333" strokeWidth="0.5"
+              fill={room.color} stroke="#333" strokeWidth="0.15"
             />
           ))}
         </svg>
@@ -633,10 +642,10 @@ interface Props {
 }
 
 export default function View3D({ plan, scene, viewMode }: Props) {
-  const resolved = useMemo(() => scene ? sceneDocumentToFloorPlan(scene) : plan!, [scene, plan])
+  const resolved = useMemo(() => scene ? sceneDocumentToFloorPlan(scene) : normalizeFloorPlan(plan!), [scene, plan])
   const wallH = scene
-    ? mToFt(scene.walls[0]?.height || scene.floorData[0]?.height || 2.74) * S
-    : (resolved.ceilingHeight ?? 9) * S
+    ? (scene.walls[0]?.height || scene.floorData[0]?.height || 2.74) * S
+    : (resolved.ceilingHeight || DEFAULT_CEILING_M) * S
   const bounds = useMemo(
     () => scene ? sceneBuildingBounds(scene) : buildingBounds(resolved),
     [scene, resolved],
@@ -644,8 +653,8 @@ export default function View3D({ plan, scene, viewMode }: Props) {
   const walkStart = useMemo(() => {
     if (scene?.rooms[0]) {
       const r = scene.rooms[0]
-      const cx = mToFt(r.position.x + r.dimensions.width / 2) * S
-      const cz = mToFt(r.position.y + r.dimensions.height / 2) * S
+      const cx = (r.position.x + r.dimensions.width / 2) * S
+      const cz = (r.position.y + r.dimensions.height / 2) * S
       return [cx, wallH * 0.62, cz] as [number, number, number]
     }
     return walkStartPosition(resolved.rooms, wallH)

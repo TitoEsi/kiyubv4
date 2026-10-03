@@ -1,4 +1,5 @@
 import { LotShape } from './floorplan'
+import { legacySquareFeetToSquareMeters } from '../units/measurement'
 
 export type GarageChoice = 'none' | '1car' | '2car' | '3car'
 export type LaundryChoice = 'none' | 'closet' | 'room'
@@ -16,7 +17,8 @@ export interface QuestionnaireData {
     floors: number
     bedrooms: number
     bathrooms: number
-    livingAreaSqft: number
+    /** Square meters. Legacy briefs stored `livingAreaSqft`; see units/legacy.ts. */
+    livingAreaM2: number
   }
   spaces: {
     homeOffice: boolean
@@ -44,7 +46,7 @@ export const initialQuestionnaire: QuestionnaireData = {
     floors: 1,
     bedrooms: 3,
     bathrooms: 2,
-    livingAreaSqft: 1800,
+    livingAreaM2: legacySquareFeetToSquareMeters(1800),
   },
   spaces: {
     homeOffice: false,

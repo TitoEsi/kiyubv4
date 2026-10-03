@@ -8,7 +8,7 @@ const STEPS = [
   { n: '03', t: 'Define your spaces', d: 'Choose the rooms and spaces you want in your home.' },
   { n: '04', t: 'Add your preferences', d: 'Specify floors, bedrooms, bathrooms, and circulation.' },
   { n: '05', t: 'Generate your floor plan', d: 'KIYUB produces architectural floor-plan candidates from your brief.' },
-  { n: '06', t: 'Review and refine', d: 'Open the drawing, comment on the plan, and request changes.' },
+  { n: '06', t: 'Review and refine', d: 'Open the drawing, comment on the plan, and send it for architect review.' },
 ]
 
 export default function GenerationGuide() {

@@ -54,10 +54,6 @@ export function canSelectCandidate(actor: Actor, project: ProjectRef): boolean {
   return actor.role === 'CLIENT' && project.client_id === actor.id && project.status !== 'PUBLISHED'
 }
 
-export function canRequestRevision(actor: Actor, project: ProjectRef): boolean {
-  return actor.role === 'CLIENT' && project.client_id === actor.id && project.status === 'FOR_CHECKING'
-}
-
 export function canApprove(actor: Actor, project: ProjectRef): boolean {
   if (project.status === 'PUBLISHED') return false
   if (actor.role === 'CLIENT') return project.client_id === actor.id && project.status === 'FOR_CHECKING'

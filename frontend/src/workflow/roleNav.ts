@@ -29,10 +29,6 @@ export function roleNavItems(role: string | undefined): RoleNavItem[] {
   return []
 }
 
-export function canOpenStudio(role: string | undefined): boolean {
-  return role === 'CLIENT' || role === 'ARCHITECT'
-}
-
 export function historyPath(role: string | undefined): string | null {
   if (role === 'CLIENT') return '/client/history'
   if (role === 'ARCHITECT') return '/architect/history'

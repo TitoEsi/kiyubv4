@@ -1,3 +1,7 @@
+/**
+ * FloorPlan geometry is in meters (lengths) and square meters (areas).
+ * Legacy feet plans are converted by units/legacy.ts normalizeFloorPlan before use.
+ */
 export interface FootprintPart {
   x: number
   y: number
@@ -123,9 +127,11 @@ export interface PlanFurniture {
 export interface FloorPlan {
   id: string
   name: string
+  units?: 'metric'
   totalWidth: number
   totalHeight: number
-  ceilingHeight: number   // feet
+  ceilingHeight: number
+  envelope?: { width: number; depth: number }
   rooms: Room[]
   doors: Door[]
   walls?: PlanWall[]
@@ -148,7 +154,7 @@ export interface Constraints {
   // Basics
   bedrooms: number
   bathrooms: number
-  sqft: number
+  livingAreaM2: number
   stories: number
   style: string
 
@@ -164,7 +170,7 @@ export interface Constraints {
   outdoor: 'none' | 'patio' | 'deck' | 'both'
 
   // Style
-  ceilingHeight: 'standard' | 'high' | 'vaulted'   // 9ft / 10ft / 12ft
+  ceilingHeight: 'standard' | 'high' | 'vaulted'
 }
 
 export interface ValidationIssue {

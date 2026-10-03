@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { FloorPlan } from "../../types/floorplan";
-import { FEET_TO_METERS, floorPlanToSceneDocument } from "./floorplan-to-scene-document";
+import { floorPlanToSceneDocument } from "./floorplan-to-scene-document";
+import { normalizeFloorPlan } from "../../units/legacy";
+
+/** PLAN is a legacy feet plan (no `units`). */
+const FEET_TO_METERS = 0.3048;
 
 const PLAN: FloorPlan = {
   id: "baseline",
@@ -46,7 +50,22 @@ describe("floorPlanToSceneDocument", () => {
     expect(scene.floors).toBe(1);
   });
 
-  it("converts room geometry from feet to meters", () => {
+  it("uses metric plans as-is without scaling", () => {
+    const metric: FloorPlan = { ...PLAN, units: "metric", rooms: [{ ...PLAN.rooms[0], x: 1, y: 2, width: 4.2, height: 3.6 }] };
+    const scene = floorPlanToSceneDocument(metric, { lotWidth: 20, lotDepth: 30 });
+    const living = scene.rooms.find((r) => r.id === "living")!;
+    expect(living.position).toEqual({ x: 1, y: 2 });
+    expect(living.dimensions.width).toBeCloseTo(4.2, 9);
+    expect(living.dimensions.height).toBeCloseTo(3.6, 9);
+  });
+
+  it("gives the same scene for a legacy plan and its normalized form", () => {
+    const a = floorPlanToSceneDocument(PLAN, { lotWidth: 20, lotDepth: 30 });
+    const b = floorPlanToSceneDocument(normalizeFloorPlan(PLAN), { lotWidth: 20, lotDepth: 30 });
+    expect(b.rooms).toEqual(a.rooms);
+  });
+
+  it("converts legacy room geometry from feet to meters", () => {
     const scene = floorPlanToSceneDocument(PLAN, { lotWidth: 20, lotDepth: 30 });
     const living = scene.rooms.find((r) => r.id === "living");
     expect(living).toBeDefined();

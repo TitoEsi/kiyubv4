@@ -1,31 +1,53 @@
 import { ValidationIssue } from '../types/floorplan'
 import { QuestionnaireData } from '../types/questionnaire'
+import { formatArea, formatMeasurement, MeasurementUnit, toSquareMeters } from '../units/measurement'
 
-/** Client-side feasibility checks. Mirrors backend lot and program rules. */
-export function validateQuestionnaire(data: QuestionnaireData): ValidationIssue[] {
+/** Program area rules mirror the feet-native generation engine; thresholds are its ft² values. */
+const ft2 = (v: number) => toSquareMeters(v, 'ft')
+
+const MIN_LOT_M = 1
+const BASE_PROGRAM_M2 = ft2(528)
+const PRIMARY_SUITE_M2 = ft2(240)
+const STANDARD_PRIMARY_M2 = ft2(168)
+const SECONDARY_BEDROOM_M2 = ft2(100)
+const SHARED_BATH_M2 = ft2(40)
+const HOME_OFFICE_M2 = ft2(90)
+const FORMAL_DINING_M2 = ft2(121)
+const LAUNDRY_ROOM_M2 = ft2(30)
+const TWO_STORY_MIN_M2 = ft2(1200)
+const THREE_CAR_MIN_M2 = ft2(1800)
+const EPS_M2 = 1e-6
+
+/**
+ * Client-side feasibility checks. Mirrors backend lot and program rules.
+ * Geometry is canonical (lot in m, living area in m²); `unit` only affects message text.
+ */
+export function validateQuestionnaire(data: QuestionnaireData, unit: MeasurementUnit = 'm'): ValidationIssue[] {
   const issues: ValidationIssue[] = []
   const { lotShape, lotWidth, lotDepth } = data.site
-  const { bedrooms, bathrooms, livingAreaSqft: sqft, floors } = data.house
+  const { bedrooms, bathrooms, livingAreaM2: area, floors } = data.house
   const { primarySuite, formalDining } = data.preferences
   const { homeOffice, laundry, garage } = data.spaces
   const secondary = Math.max(0, bedrooms - 1)
   const sharedBaths = Math.max(0, bathrooms - 1)
+  const len = (m: number) => formatMeasurement(m, unit)
+  const sq = (m2: number) => formatArea(m2, unit)
 
-  if (!(lotWidth > 0) || lotWidth < 1) {
+  if (!(lotWidth > 0) || lotWidth < MIN_LOT_M) {
     issues.push({
       field: 'lotWidth',
       severity: 'error',
-      message: 'Lot width must be at least 1 meter.',
-      detail: 'Enter a lot width greater than or equal to 1 m.',
+      message: `Lot width must be at least ${len(MIN_LOT_M)}.`,
+      detail: `Enter a lot width greater than or equal to ${len(MIN_LOT_M)}.`,
     })
   }
 
-  if (!(lotDepth > 0) || lotDepth < 1) {
+  if (!(lotDepth > 0) || lotDepth < MIN_LOT_M) {
     issues.push({
       field: 'lotDepth',
       severity: 'error',
-      message: 'Lot depth must be at least 1 meter.',
-      detail: 'Enter a lot depth greater than or equal to 1 m.',
+      message: `Lot depth must be at least ${len(MIN_LOT_M)}.`,
+      detail: `Enter a lot depth greater than or equal to ${len(MIN_LOT_M)}.`,
     })
   }
 
@@ -66,36 +88,35 @@ export function validateQuestionnaire(data: QuestionnaireData): ValidationIssue[
     })
   }
 
-  let minSqft = 528
-  minSqft += primarySuite ? 240 : 168
-  minSqft += secondary * 100
-  minSqft += sharedBaths * 40
-  if (homeOffice) minSqft += 90
-  if (formalDining) minSqft += 121
-  if (laundry === 'room') minSqft += 30
+  const baseOverhead = BASE_PROGRAM_M2 + (primarySuite ? PRIMARY_SUITE_M2 : STANDARD_PRIMARY_M2)
+  let minArea = baseOverhead
+  minArea += secondary * SECONDARY_BEDROOM_M2
+  minArea += sharedBaths * SHARED_BATH_M2
+  if (homeOffice) minArea += HOME_OFFICE_M2
+  if (formalDining) minArea += FORMAL_DINING_M2
+  if (laundry === 'room') minArea += LAUNDRY_ROOM_M2
 
-  if (sqft < minSqft) {
+  if (area < minArea - EPS_M2) {
     const parts: string[] = []
     if (secondary) parts.push(`${secondary} secondary bedroom${secondary !== 1 ? 's' : ''}`)
     parts.push(`${bathrooms} bathroom${bathrooms !== 1 ? 's' : ''}`)
     if (homeOffice) parts.push('home office')
     if (formalDining) parts.push('formal dining')
     issues.push({
-      field: 'sqft',
+      field: 'livingAreaM2',
       severity: 'error',
       message: 'Not enough space for this configuration.',
-      detail: `Your selections (${parts.join(', ')}) need at least ${minSqft.toLocaleString()} sqft. You set ${sqft.toLocaleString()} sqft. Increase size or reduce rooms.`,
+      detail: `Your selections (${parts.join(', ')}) need at least ${sq(minArea)}. You set ${sq(area)}. Increase size or reduce rooms.`,
     })
   }
 
-  const baseOverhead = 528 + (primarySuite ? 240 : 168)
-  const maxSecondary = Math.max(0, Math.floor((sqft - baseOverhead) / 100))
-  if (secondary > maxSecondary && sqft >= minSqft) {
+  const maxSecondary = Math.max(0, Math.floor((area - baseOverhead + EPS_M2) / SECONDARY_BEDROOM_M2))
+  if (secondary > maxSecondary && area >= minArea - EPS_M2) {
     issues.push({
       field: 'bedrooms',
       severity: 'error',
-      message: `${bedrooms} bedrooms is not feasible in ${sqft.toLocaleString()} sqft.`,
-      detail: `After essential rooms, only ${sqft - baseOverhead} sqft remains for secondary bedrooms (${maxSecondary} max at 100 sqft each). Reduce to ${maxSecondary + 1} total or increase sqft.`,
+      message: `${bedrooms} bedrooms is not feasible in ${sq(area)}.`,
+      detail: `After essential rooms, only ${sq(Math.max(0, area - baseOverhead))} remains for secondary bedrooms (${maxSecondary} max at ${sq(SECONDARY_BEDROOM_M2)} each). Reduce to ${maxSecondary + 1} total or increase the living area.`,
     })
   }
 
@@ -108,21 +129,21 @@ export function validateQuestionnaire(data: QuestionnaireData): ValidationIssue[
     })
   }
 
-  if (floors === 2 && sqft < 1200) {
+  if (floors === 2 && area < TWO_STORY_MIN_M2 - EPS_M2) {
     issues.push({
       field: 'floors',
       severity: 'warning',
-      message: 'Two-story layout under 1,200 sqft is cramped.',
-      detail: 'Staircase overhead is significant in small homes. Consider single-story or 1,200+ sqft.',
+      message: `Two-story layout under ${sq(TWO_STORY_MIN_M2)} is cramped.`,
+      detail: `Staircase overhead is significant in small homes. Consider single-story or ${sq(TWO_STORY_MIN_M2)}+.`,
     })
   }
 
-  if (garage === '3car' && sqft < 1800) {
+  if (garage === '3car' && area < THREE_CAR_MIN_M2 - EPS_M2) {
     issues.push({
       field: 'garage',
       severity: 'warning',
       message: 'A 3-car garage is disproportionate for this home size.',
-      detail: `3-car garages suit 1,800+ sqft homes. With ${sqft.toLocaleString()} sqft, a 1 or 2-car garage fits better.`,
+      detail: `3-car garages suit ${sq(THREE_CAR_MIN_M2)}+ homes. With ${sq(area)}, a 1 or 2-car garage fits better.`,
     })
   }
 

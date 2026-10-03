@@ -4,14 +4,14 @@ import InviteClientModal from '../components/InviteClientModal'
 import WorkflowShell from './WorkflowShell'
 import { ArchitectClientRow, listArchitectClients } from '../workflow/api'
 import { displayNameFromEmail, formatDate, formatRelative } from '../workflow/displayName'
-import { ClientSort, filterAndSortClients } from '../workflow/projectQuery'
+import { ClientSort, filterAndSortClients, groupClientsByEmail } from '../workflow/projectQuery'
 
 export default function ArchitectClients() {
   const [rows, setRows] = useState<ArchitectClientRow[]>([])
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<ClientSort>('name-asc')
   const [error, setError] = useState<string | null>(null)
-  const [inviteOpen, setInviteOpen] = useState(false)
+  const [inviteEmail, setInviteEmail] = useState<string | null>(null)
 
   async function refresh() {
     setRows(await listArchitectClients())
@@ -21,7 +21,10 @@ export default function ArchitectClients() {
     refresh().catch(e => setError(String(e)))
   }, [])
 
-  const visible = useMemo(() => filterAndSortClients(rows, query, sort), [rows, query, sort])
+  const visible = useMemo(
+    () => groupClientsByEmail(filterAndSortClients(rows, query, sort)),
+    [rows, query, sort],
+  )
 
   return (
     <WorkflowShell>
@@ -32,7 +35,7 @@ export default function ArchitectClients() {
             <p className="studio-meta">Studio</p>
             <h1 className="studio-page-title">Clients</h1>
           </div>
-          <button type="button" className="catalog-generate-btn" onClick={() => setInviteOpen(true)}>
+          <button type="button" className="catalog-generate-btn" onClick={() => setInviteEmail('')}>
             Invite client
           </button>
         </header>
@@ -64,7 +67,7 @@ export default function ArchitectClients() {
                 : 'Invite your first client to begin a project.'}
             </p>
             {!query && (
-              <button type="button" className="catalog-generate-btn" onClick={() => setInviteOpen(true)}>
+              <button type="button" className="catalog-generate-btn" onClick={() => setInviteEmail('')}>
                 Invite client
               </button>
             )}
@@ -77,26 +80,41 @@ export default function ArchitectClients() {
                   <th>Client</th>
                   <th>Email</th>
                   <th>Assigned architect</th>
-                  <th>Project</th>
-                  <th>Status</th>
+                  <th>Projects</th>
                   <th>Joined</th>
                   <th>Last activity</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
-                {visible.map(row => (
-                  <tr key={`${row.project_id || 'pending'}-${row.email}-${row.invitation_id || 'assigned'}`}>
-                    <td>{row.full_name || displayNameFromEmail(row.email)}</td>
-                    <td>{row.email}</td>
-                    <td>{row.architect_email || '—'}</td>
+                {visible.map(group => (
+                  <tr key={group.email}>
+                    <td>{group.full_name || displayNameFromEmail(group.email)}</td>
+                    <td>{group.email}</td>
+                    <td>{group.architect_email || '—'}</td>
                     <td>
-                      {row.project_id
-                        ? <Link to={`/projects/${row.project_id}`}>{row.project_name || 'Open project'}</Link>
-                        : (row.project_name || '—')}
+                      <ul className="studio-notes">
+                        {group.projects.map(row => (
+                          <li key={`${row.project_id || 'pending'}-${row.invitation_id || row.email}`}>
+                            {row.project_id
+                              ? <Link to={`/projects/${row.project_id}`}>{row.project_name || 'Open project'}</Link>
+                              : (row.project_name || 'Pending invitation')}
+                            <span className="studio-row-activity">
+                              {(row.invitation_status || row.project_status || 'Assigned').replace(/_/g, ' ')}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
                     </td>
-                    <td>{row.invitation_status ? row.invitation_status.replace(/_/g, ' ') : (row.project_status || 'Assigned')}</td>
-                    <td>{formatDate(row.created_at) || '—'}</td>
-                    <td>{formatRelative(row.last_activity)?.replace(/^Updated /, '') || '—'}</td>
+                    <td>{formatDate(group.created_at) || '—'}</td>
+                    <td>{formatRelative(group.last_activity)?.replace(/^Updated /, '') || '—'}</td>
+                    <td>
+                      {group.projects.some(p => p.user_id) && (
+                        <button type="button" className="wf-action" onClick={() => setInviteEmail(group.email)}>
+                          Assign New Project
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -104,9 +122,10 @@ export default function ArchitectClients() {
           </div>
         )}
       </div>
-      {inviteOpen && (
+      {inviteEmail !== null && (
         <InviteClientModal
-          onClose={() => setInviteOpen(false)}
+          initialEmail={inviteEmail}
+          onClose={() => setInviteEmail(null)}
           onSent={() => { void refresh() }}
         />
       )}

@@ -57,6 +57,10 @@ class User:
     suspended: bool = False
     deleted_at: datetime | None = None
     full_name: str | None = None
+    terms_accepted_at: datetime | None = None
+    privacy_accepted_at: datetime | None = None
+    # None reads as "m"; left unset so profile writes omit the column until a unit is chosen.
+    measurement_unit: str | None = None
     created_at: datetime = field(default_factory=_now)
     updated_at: datetime = field(default_factory=_now)
 
@@ -153,6 +157,8 @@ class Comment:
     body: str = ""
     x: float | None = None
     y: float | None = None
+    # None = legacy plan-feet pin; "metric" = meters.
+    coord_units: str | None = None
     created_at: datetime = field(default_factory=_now)
 
 

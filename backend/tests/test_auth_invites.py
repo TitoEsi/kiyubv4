@@ -17,6 +17,8 @@ from workflow.api import router
 from workflow.models import ArchitectApplication, User
 from workflow.services import _hash_invite_token
 
+ACCEPT = {"accept_terms": True, "accept_privacy": True}
+
 
 def auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
@@ -74,6 +76,7 @@ def test_complete_account_creates_one_draft_project(client):
         json={
             "email": "complete@kiyub.local",
             "password": "completepass",
+            **ACCEPT,
             "invitation_token": token,
             "full_name": "Complete Client",
             "role": "MAIN_ADMIN",
@@ -95,6 +98,7 @@ def test_complete_account_creates_one_draft_project(client):
         json={
             "email": "complete@kiyub.local",
             "password": "completepass",
+            **ACCEPT,
             "invitation_token": token,
             "full_name": "Complete Client",
         },
@@ -127,7 +131,8 @@ def test_pending_invite_needs_registration_when_profile_exists(client):
     public = client.get(f"/api/invitations/by-token/{token}")
     assert public.status_code == 200
     assert public.json()["status"] == "PENDING"
-    assert public.json()["needs_registration"] is True
+    assert public.json()["needs_registration"] is False
+    assert "existing_client" not in public.json()
 
 
 def test_production_missing_public_app_url_rejects_invite(client, monkeypatch):
@@ -200,16 +205,44 @@ def test_production_missing_public_app_url_rejects_architect_approve(client, mon
     assert row["status"] == "PENDING_APPROVAL"
 
 
-def test_existing_account_cannot_be_invited(client):
+def test_existing_client_can_be_invited(client, monkeypatch):
+    sent: list = []
+    monkeypatch.setattr("workflow.mail.send_auth_invite", lambda *a, **k: sent.append(a) or None)
     tok = tokens(client)
     r = client.post(
         "/api/invitations",
         json={"email": "client@kiyub.local", "project_name": "Taken"},
         headers=auth(tok["architect"]["token"]),
     )
-    assert r.status_code == 409
+    assert r.status_code == 200, r.text
+    payload = r.json()
+    assert payload["existing_client"] is True
+    assert payload["status"] == "PENDING"
+    assert payload["project_id"] is None
+    assert sent == []
+    db = wfdb.SessionLocal()
+    try:
+        assert db.query(User).filter(User.email == "client@kiyub.local").count() == 1
+    finally:
+        db.close()
+    public = client.get(f"/api/invitations/by-token/{payload['token']}")
+    assert public.status_code == 200
+    assert public.json()["needs_registration"] is False
+    assert public.json()["project_name"] == "Taken"
+    assert public.json()["architect_name"]
+    assert "existing_client" not in public.json()
     listed = client.get("/api/invitations", headers=auth(tok["architect"]["token"])).json()
-    assert not any(i["email"] == "client@kiyub.local" and i["status"] == "PENDING" and i["project_name"] == "Taken" for i in listed)
+    assert any(i["email"] == "client@kiyub.local" and i["status"] == "PENDING" and i["project_name"] == "Taken" for i in listed)
+
+
+def test_staff_email_cannot_be_invited_as_client(client):
+    tok = tokens(client)
+    r = client.post(
+        "/api/invitations",
+        json={"email": "architect@kiyub.local", "project_name": "Staff lot"},
+        headers=auth(tok["architect"]["token"]),
+    )
+    assert r.status_code == 400
 
 
 def test_wrong_email_cannot_complete_invite(client):
@@ -224,6 +257,7 @@ def test_wrong_email_cannot_complete_invite(client):
         json={
             "email": "client@kiyub.local",
             "password": "clientpass",
+            **ACCEPT,
             "invitation_token": invited.json()["token"],
             "full_name": "Wrong Person",
         },
@@ -256,6 +290,7 @@ def test_expired_invite_cannot_complete(client, monkeypatch):
         json={
             "email": "expired@kiyub.local",
             "password": "expiredpass",
+            **ACCEPT,
             "invitation_token": invited.json()["token"],
             "full_name": "Expired",
         },
@@ -295,7 +330,7 @@ def test_architect_application_approval_and_login(client, monkeypatch):
     assert sent == ["newarch@kiyub.local"]
     done = client.post(
         f"/api/architect-applications/by-token/{approved.json()['token']}/complete",
-        json={"password": "archpass", "role": "IT_PERSONNEL"},
+        json={"password": "archpass", "role": "IT_PERSONNEL", **ACCEPT},
     )
     assert done.status_code == 200
     assert done.json()["user"]["role"] == "ARCHITECT"
@@ -359,7 +394,7 @@ def test_architect_application_rejection(client, monkeypatch):
         db.close()
     done = client.post(
         f"/api/architect-applications/by-token/{leaked}/complete",
-        json={"password": "shouldfail"},
+        json={"password": "shouldfail", **ACCEPT},
     )
     assert done.status_code == 409
 

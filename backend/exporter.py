@@ -1,10 +1,18 @@
+"""DXF/PDF export. Input FloorPlan is canonical meters; labels use the requested display unit."""
 import ezdxf
 from ezdxf.enums import TextEntityAlignment
 import io
 
+from generation_units import format_dimensions
 
-def export_to_dxf(floor_plan: dict) -> bytes:
+DEFAULT_WIDTH_M = 12.0
+DEFAULT_DEPTH_M = 10.5
+DXF_INSUNITS_METERS = 6
+
+
+def export_to_dxf(floor_plan: dict, unit: str = "m") -> bytes:
     doc = ezdxf.new("R2010")
+    doc.header["$INSUNITS"] = DXF_INSUNITS_METERS
     msp = doc.modelspace()
 
     doc.layers.add("BOUNDARY", color=1)
@@ -12,8 +20,8 @@ def export_to_dxf(floor_plan: dict) -> bytes:
     doc.layers.add("LABELS", color=3)
     doc.layers.add("DIMENSIONS", color=2)
 
-    total_w = float(floor_plan.get("totalWidth", 40))
-    total_h = float(floor_plan.get("totalHeight", 35))
+    total_w = float(floor_plan.get("totalWidth", DEFAULT_WIDTH_M))
+    total_h = float(floor_plan.get("totalHeight", DEFAULT_DEPTH_M))
 
     # Outer boundary
     msp.add_lwpolyline(
@@ -41,15 +49,15 @@ def export_to_dxf(floor_plan: dict) -> bytes:
 
         name_text = msp.add_text(
             room.get("name", "Room"),
-            dxfattribs={"layer": "LABELS", "height": max(1.0, font_h)},
+            dxfattribs={"layer": "LABELS", "height": max(0.3, font_h)},
         )
-        name_text.set_placement((cx, cy + 0.6), align=TextEntityAlignment.MIDDLE_CENTER)
+        name_text.set_placement((cx, cy + 0.18), align=TextEntityAlignment.MIDDLE_CENTER)
 
         dim_text = msp.add_text(
-            f"{rw:.0f}' x {rh:.0f}'",
-            dxfattribs={"layer": "DIMENSIONS", "height": max(0.7, font_h * 0.7)},
+            format_dimensions(rw, rh, unit),
+            dxfattribs={"layer": "DIMENSIONS", "height": max(0.2, font_h * 0.7)},
         )
-        dim_text.set_placement((cx, cy - 0.6), align=TextEntityAlignment.MIDDLE_CENTER)
+        dim_text.set_placement((cx, cy - 0.18), align=TextEntityAlignment.MIDDLE_CENTER)
 
     stream = io.BytesIO()
     doc.write(stream)
@@ -98,7 +106,7 @@ def _build_pdf(content: bytes, page_w: float, page_h: float) -> bytes:
     return bytes(out)
 
 
-def export_to_pdf(floor_plan: dict) -> bytes:
+def export_to_pdf(floor_plan: dict, unit: str = "m") -> bytes:
     """Draw the current FloorPlan. Plan Y is down (same as 2D ArchPlan).
 
     PDF Y is up. Mapping: pdf_y = page_h - margin - plan_y * scale, so smaller
@@ -109,8 +117,8 @@ def export_to_pdf(floor_plan: dict) -> bytes:
     margin = 40.0
     title_h = 28.0
     name = str(floor_plan.get("name") or "Floor Plan")
-    total_w = max(float(floor_plan.get("totalWidth") or 40), 1.0)
-    total_h = max(float(floor_plan.get("totalHeight") or 35), 1.0)
+    total_w = max(float(floor_plan.get("totalWidth") or DEFAULT_WIDTH_M), 0.3)
+    total_h = max(float(floor_plan.get("totalHeight") or DEFAULT_DEPTH_M), 0.3)
     rooms = floor_plan.get("rooms") or []
     doors = floor_plan.get("doors") or []
 
@@ -140,7 +148,7 @@ def export_to_pdf(floor_plan: dict) -> bytes:
         ops.append(f"{px:.2f} {py:.2f} {rw * scale:.2f} {rh * scale:.2f} re B")
         cx, cy = to_pdf(rx + rw / 2, ry + rh / 2)
         label = _pdf_escape(str(room.get("name") or "Room"))
-        dim = _pdf_escape(f"{rw:.0f}' x {rh:.0f}'")
+        dim = _pdf_escape(format_dimensions(rw, rh, unit))
         ops.append("0 g")
         ops.append("BT /F1 9 Tf")
         ops.append(f"1 0 0 1 {cx - 22:.2f} {cy + 4:.2f} Tm ({label}) Tj ET")

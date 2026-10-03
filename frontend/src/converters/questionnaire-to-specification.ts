@@ -40,7 +40,7 @@ export function questionnaireToSpecification(
       floors: data.house.floors,
       bedrooms: data.house.bedrooms,
       bathrooms: data.house.bathrooms,
-      livingAreaSqft: data.house.livingAreaSqft,
+      livingAreaM2: data.house.livingAreaM2,
     },
     rooms: { required },
     features: {

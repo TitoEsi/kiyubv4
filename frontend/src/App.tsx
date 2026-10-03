@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { ReactElement } from 'react'
 import KiyubLogo from './components/KiyubLogo'
 import { AuthProvider, useAuth } from './workflow/auth'
+import { UnitsProvider } from './units/UnitsProvider'
 import { roleHome } from './workflow/paths'
 import LoginPage from './pages/LoginPage'
 import LandingPage from './pages/LandingPage'
@@ -21,7 +22,6 @@ import HistoryPage from './pages/HistoryPage'
 import ITAnalyticsPage from './pages/ITAnalyticsPage'
 import ITHome from './pages/ITHome'
 import ProjectPage from './pages/ProjectPage'
-import SandboxGenerate from './pages/SandboxGenerate'
 import StaffArchitectsPage from './pages/StaffArchitectsPage'
 import StaffClientsPage from './pages/StaffClientsPage'
 import AboutPage from './pages/AboutPage'
@@ -54,6 +54,7 @@ function HomeRedirect() {
 export default function App() {
   return (
     <AuthProvider>
+      <UnitsProvider>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/terms" element={<LegalPage kind="terms" />} />
@@ -61,7 +62,7 @@ export default function App() {
         <Route path="/invite/:token" element={<InvitePage />} />
         <Route path="/architect/complete/:token" element={<ArchitectCompletePage />} />
         <Route path="/auth/callback" element={<AuthCallback />} />
-        <Route path="/sandbox" element={<Guard roles={['CLIENT', 'ARCHITECT']}><SandboxGenerate /></Guard>} />
+        <Route path="/sandbox/*" element={<Navigate to="/" replace />} />
         <Route path="/client" element={<Guard roles={['CLIENT']}><ClientHome /></Guard>} />
         <Route path="/client/history" element={<Guard roles={['CLIENT']}><HistoryPage /></Guard>} />
         <Route path="/architect" element={<Guard roles={['ARCHITECT']}><ArchitectHome /></Guard>} />
@@ -86,6 +87,7 @@ export default function App() {
         <Route path="/contact" element={<Guard roles={['CLIENT', 'ARCHITECT', 'MAIN_ADMIN', 'IT_PERSONNEL']}><ContactPage /></Guard>} />
         <Route path="/" element={<HomeRedirect />} />
       </Routes>
+      </UnitsProvider>
     </AuthProvider>
   )
 }

@@ -6,6 +6,8 @@ import json
 import secrets
 from datetime import datetime, timedelta, timezone
 
+from generation_units import METRIC, floor_plan_to_metric, ft_to_m
+
 from .auth import provision_user
 from .generate import _stub_plan
 from .models import AICandidate, Comment, DesignDocument, Invitation, Project, Revision, User
@@ -39,6 +41,8 @@ def seed_users(db: Session) -> list[User]:
         user = db.query(User).filter(User.email == email).one_or_none()
         if user is None:
             user = provision_user(db, email, password, role, approved)
+            user.terms_accepted_at = user.privacy_accepted_at = _now()
+            db.touch(user)
             created.append(user)
     db.commit()
     seed_collaboration(db)
@@ -118,7 +122,7 @@ def _ensure_stub_floor_plan(db: Session, project: Project, client: User) -> None
         doc = DesignDocument(project_id=project.id, stage="AI_PROPOSAL")
         db.add(doc)
         db.flush()
-    plan = _stub_plan(0)
+    plan = floor_plan_to_metric(_stub_plan(0))
     last = (
         db.query(Revision)
         .filter(Revision.design_document_id == doc.id)
@@ -151,8 +155,9 @@ def _ensure_client_pin(db: Session, project: Project, client: User) -> None:
             author_id=client.id,
             body="Please move this door closer to the hallway.",
             object_id="living-0",
-            x=9.0,
-            y=7.0,
+            x=ft_to_m(9.0),
+            y=ft_to_m(7.0),
+            coord_units=METRIC,
             stage="AI_PROPOSAL",
         )
     )

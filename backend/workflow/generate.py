@@ -1,12 +1,22 @@
-"""Call the existing MOE + refine pipeline. Do not replace /api/generate/moe."""
+"""Call the existing MOE + refine pipeline. Do not replace /api/generate/moe.
+
+``brief_to_constraints`` returns canonical units (lot in m, ``livingAreaM2`` in m²).
+``run_generation`` is the engine boundary: it hands the feet-native engine its ``sqft``
+and converts every returned plan to meters.
+"""
 from __future__ import annotations
 
 import os
 import time
 from typing import Any
 
+from generation_units import floor_plan_to_metric, ft2_to_m2, living_area_m2, m2_to_ft2
+
+DEFAULT_LIVING_AREA_M2 = ft2_to_m2(1800)
+
 
 def _stub_plan(idx: int) -> dict[str, Any]:
+    """Feet-native, like real engine output."""
     return {
         "id": f"stub-{idx}",
         "name": f"Candidate {chr(65 + idx)}",
@@ -58,7 +68,7 @@ def brief_to_constraints(questionnaire: dict, specification: dict | None = None)
         "lotDepth": float(site.get("depth") or qsite.get("lotDepth") or 30),
         "bedrooms": int(building.get("bedrooms") or house.get("bedrooms") or 3),
         "bathrooms": int(building.get("bathrooms") or house.get("bathrooms") or 2),
-        "sqft": int(building.get("livingAreaSqft") or house.get("livingAreaSqft") or 1800),
+        "livingAreaM2": living_area_m2(building) or living_area_m2(house) or DEFAULT_LIVING_AREA_M2,
         "stories": int(building.get("floors") or house.get("floors") or 1),
         "style": spec.get("style") or prefs.get("style") or "modern",
         "openPlan": bool(features.get("openPlan", prefs.get("openPlan", False))),
@@ -72,8 +82,25 @@ def brief_to_constraints(questionnaire: dict, specification: dict | None = None)
     }
 
 
+def to_engine_constraints(constraints: dict) -> dict:
+    c = dict(constraints)
+    m2 = c.pop("livingAreaM2", None)
+    if m2:
+        c["sqft"] = int(round(m2_to_ft2(m2)))
+    c.setdefault("sqft", int(round(m2_to_ft2(DEFAULT_LIVING_AREA_M2))))
+    return c
+
+
 def run_generation(constraints: dict, num_variants: int = 3) -> dict:
-    """Same internals as POST /api/generate/moe without replacing that route."""
+    """Canonical constraints in, meters plans out."""
+    result = _run_engine(to_engine_constraints(constraints), num_variants)
+    result["plans"] = [floor_plan_to_metric(p) for p in result.get("plans") or []]
+    result["applied_constraints"] = constraints
+    return result
+
+
+def _run_engine(constraints: dict, num_variants: int) -> dict:
+    """Feet-native engine call. Same internals as POST /api/generate/moe."""
     if os.environ.get("KIYUB_WORKFLOW_STUB_GENERATE") == "1":
         plans = [_stub_plan(i) for i in range(num_variants)]
         return {"status": "valid", "plans": plans, "validated": True}
@@ -95,7 +122,6 @@ def run_generation(constraints: dict, num_variants: int = 3) -> dict:
         moe_s = 0.0
 
     result = refine_generation(constraints, moe)
-    result["applied_constraints"] = constraints
     result.setdefault("generation_debug", {})
     result["generation_debug"]["timings"] = {
         "buildify_moe_s": moe_s,

@@ -84,14 +84,6 @@ def can_select_candidate(actor: Actor, project: dict) -> bool:
     return actor.role == CLIENT and project.get("client_id") == actor.id and project.get("status") != "PUBLISHED"
 
 
-def can_request_revision(actor: Actor, project: dict) -> bool:
-    return (
-        actor.role == CLIENT
-        and project.get("client_id") == actor.id
-        and project.get("status") == "FOR_CHECKING"
-    )
-
-
 def can_approve(actor: Actor, project: dict) -> bool:
     if project.get("status") == "PUBLISHED":
         return False
@@ -157,7 +149,6 @@ canEditDesign = can_edit_design
 canGenerate = can_generate
 canComment = can_comment
 canSelectCandidate = can_select_candidate
-canRequestRevision = can_request_revision
 canApprove = can_approve
 canPublish = can_publish
 canManageAccounts = can_manage_accounts

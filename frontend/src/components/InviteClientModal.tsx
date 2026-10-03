@@ -4,11 +4,13 @@ import { inviteClient, Invitation } from '../workflow/api'
 export default function InviteClientModal({
   onClose,
   onSent,
+  initialEmail = '',
 }: {
   onClose: () => void
   onSent: (invite: Invitation) => void
+  initialEmail?: string
 }) {
-  const [email, setEmail] = useState('')
+  const [email, setEmail] = useState(initialEmail)
   const [projectName, setProjectName] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [sent, setSent] = useState<Invitation | null>(null)
@@ -47,16 +49,22 @@ export default function InviteClientModal({
   }
 
   const href = sent?.invite_url ? `${window.location.origin}${sent.invite_url}` : ''
+  const returning = sent?.existing_client === true
 
   return (
     <div className="studio-modal-backdrop" role="presentation" onClick={onClose}>
       <div className="studio-modal" role="dialog" aria-labelledby="invite-title" onClick={e => e.stopPropagation()}>
         <p className="studio-meta">Invitation</p>
-        <h2 id="invite-title">Invite client</h2>
+        <h2 id="invite-title">{initialEmail ? 'Assign new project' : 'Invite client'}</h2>
         {sent ? (
           <div className="studio-stack">
             <p>Invitation sent successfully.</p>
-            <p className="wf-hint">KIYUB emailed {sent.email}. The project appears after they complete their account. A backup link is available for development.</p>
+            <p className="wf-hint">
+              {returning
+                ? `${sent.email} already has a KIYUB account. They can accept this invitation to open a new independent project.`
+                : `KIYUB emailed ${sent.email}. The project appears after they complete their account.`}
+              {' '}A backup link is available for development.
+            </p>
             <label htmlFor="invite-link">Invite link</label>
             <input id="invite-link" readOnly value={href} />
             <div className="studio-toolbar">
@@ -81,6 +89,7 @@ export default function InviteClientModal({
               onChange={e => setEmail(e.target.value)}
               placeholder="client@studio.local"
               required
+              readOnly={!!initialEmail}
             />
             <label htmlFor="invite-name">Project name (optional)</label>
             <input

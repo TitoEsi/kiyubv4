@@ -25,7 +25,7 @@ def _load_root_env() -> None:
 _load_root_env()
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -33,7 +33,16 @@ from typing import Literal, Optional
 
 from generator import generate_floor_plan
 from exporter import export_to_dxf, export_to_pdf
-from cost import estimate_cost, REGION_MULTIPLIERS
+from generation_units import (
+    floor_plan_to_feet,
+    floor_plan_to_metric,
+    format_area,
+    format_dimensions,
+    ft2_to_m2,
+    ft_to_m,
+    m2_to_ft2,
+    normalize_floor_plan,
+)
 from scoring import score_design
 from moe.inference import predict_floor_plan, load_model, LotConstraintError, compute_buildable_envelope
 from solver.pipeline import refine_generation
@@ -43,6 +52,8 @@ from moe.config import MOEConfig
 from moe.experts import EXPERT_NAMES
 from moe.housegan.inference import get_housegan_status
 from workflow.api import router as workflow_router
+from workflow.auth import require_studio_user
+from workflow.models import User
 from workflow.db import SessionLocal, init_db, require_supabase_runtime
 from workflow.seed import seed_users
 
@@ -91,6 +102,7 @@ app.add_middleware(
 # ── Request models ────────────────────────────────────────────────────────────
 
 class Constraints(BaseModel):
+    """Architectural inputs in canonical units: lengths in meters, areas in m²."""
     # Site
     lotShape: Literal["rectangle", "square", "l_shape", "irregular"] = "rectangle"
     lotWidth: float = 20.0
@@ -99,7 +111,9 @@ class Constraints(BaseModel):
     # Basics
     bedrooms: int = 3
     bathrooms: int = 2
-    sqft: int = 1800
+    livingAreaM2: Optional[float] = None
+    # Deprecated: legacy square-feet living area, used only when livingAreaM2 is absent.
+    sqft: Optional[int] = None
     stories: int = 1
     style: str = "modern"
 
@@ -118,13 +132,26 @@ class Constraints(BaseModel):
     ceilingHeight: str = "standard"
 
 
+DEFAULT_LIVING_AREA_M2 = ft2_to_m2(1800)
+
+
+def engine_constraints(constraints: Constraints) -> dict:
+    """Canonical (m, m²) request -> feet-native engine dict. Lot stays meters (envelope.py converts)."""
+    c = constraints.model_dump()
+    m2 = c.pop("livingAreaM2", None)
+    legacy_sqft = c.pop("sqft", None)
+    if m2 is not None and m2 > 0:
+        c["sqft"] = int(round(m2_to_ft2(m2)))
+    elif legacy_sqft:
+        c["sqft"] = int(legacy_sqft)
+    else:
+        c["sqft"] = int(round(m2_to_ft2(DEFAULT_LIVING_AREA_M2)))
+    return c
+
+
 class ExportRequest(BaseModel):
     floor_plan: dict
-
-
-class CostRequest(BaseModel):
-    floor_plan: dict
-    region: str = "National Average"
+    unit: Literal["m", "ft", "cm", "mm", "in"] = "m"
 
 
 class ScoreRequest(BaseModel):
@@ -161,15 +188,15 @@ async def health():
 
 
 @app.post("/api/generate")
-async def generate(constraints: Constraints):
+async def generate(constraints: Constraints, _user: User = Depends(require_studio_user)):
     try:
-        c = constraints.model_dump()
+        c = engine_constraints(constraints)
         plans = await asyncio.gather(
             generate_floor_plan(c, 0),
             generate_floor_plan(c, 1),
             generate_floor_plan(c, 2),
         )
-        return {"plans": list(plans)}
+        return {"plans": [floor_plan_to_metric(p) for p in plans]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -180,7 +207,12 @@ def validate_constraints_feasibility(c: dict) -> list:
     Returns a list of issues (may be empty). Each issue:
       {"field": str, "severity": "error"|"warning", "message": str, "detail": str}
     Errors block generation; warnings are informational only.
+
+    ``c`` is the feet-native engine dict (``sqft`` in ft²); messages report canonical m/m².
     """
+    def area(sqft: float) -> str:
+        return format_area(ft2_to_m2(sqft))
+
     issues = []
     sqft         = c.get("sqft", 1800)
     bedrooms     = c.get("bedrooms", 3)       # total incl. primary
@@ -262,10 +294,10 @@ def validate_constraints_feasibility(c: dict) -> list:
                     "message": "This lot is too small for the requested home.",
                     "detail": (
                         f"After placeholder setbacks the buildable envelope is "
-                        f"{env['buildable_width']:.1f} ft × {env['buildable_depth']:.1f} ft "
-                        f"({buildable_area:,.0f} sqft across {stories} "
+                        f"{format_dimensions(ft_to_m(env['buildable_width']), ft_to_m(env['buildable_depth']))} "
+                        f"({area(buildable_area)} across {stories} "
                         f"{'story' if stories == 1 else 'stories'}). "
-                        f"The requested configuration needs about {needed:,} sqft. "
+                        f"The requested configuration needs about {area(needed)}. "
                         f"Increase the lot, reduce size, or remove rooms. "
                         "These setbacks are conceptual only, not Philippine building-code values."
                     ),
@@ -281,13 +313,13 @@ def validate_constraints_feasibility(c: dict) -> list:
         if home_office: parts.append("home office")
         if formal_dining: parts.append("formal dining")
         issues.append({
-            "field": "sqft",
+            "field": "livingAreaM2",
             "severity": "error",
             "message": "Not enough space for this configuration.",
             "detail": (
-                f"Your selections ({', '.join(parts)}) require at least {min_sqft:,} sqft of "
-                f"living space. You set {sqft:,} sqft. "
-                f"Increase the size to {min_sqft:,}+ sqft, or remove bedrooms/rooms."
+                f"Your selections ({', '.join(parts)}) require at least {area(min_sqft)} of "
+                f"living space. You set {area(sqft)}. "
+                f"Increase the size to {area(min_sqft)} or more, or remove bedrooms/rooms."
             ),
         })
 
@@ -298,12 +330,12 @@ def validate_constraints_feasibility(c: dict) -> list:
         issues.append({
             "field": "bedrooms",
             "severity": "error",
-            "message": f"{bedrooms} bedrooms is not feasible in {sqft:,} sqft.",
+            "message": f"{bedrooms} bedrooms is not feasible in {area(sqft)}.",
             "detail": (
-                f"After essential rooms, only {int(sqft - base_overhead):,} sqft remains for "
-                f"secondary bedrooms ({int(max_secondary)} max at 100 sqft each). "
+                f"After essential rooms, only {area(sqft - base_overhead)} remains for "
+                f"secondary bedrooms ({int(max_secondary)} max at {area(100)} each). "
                 f"Use {int(max_secondary) + 1} total bedrooms or increase to "
-                f"{int(base_overhead + secondary * 100):,}+ sqft."
+                f"{area(base_overhead + secondary * 100)} or more."
             ),
         })
 
@@ -324,8 +356,8 @@ def validate_constraints_feasibility(c: dict) -> list:
         issues.append({
             "field": "stories",
             "severity": "warning",
-            "message": "Two-story layout under 1,200 sqft is cramped.",
-            "detail": "Staircase overhead is significant in small homes. Consider single-story or increase to 1,200+ sqft.",
+            "message": f"Two-story layout under {area(1200)} is cramped.",
+            "detail": f"Staircase overhead is significant in small homes. Consider single-story or increase to {area(1200)} or more.",
         })
 
     # ── WARNING: 3-car garage on small home ──────────────────────────────
@@ -334,7 +366,7 @@ def validate_constraints_feasibility(c: dict) -> list:
             "field": "garage",
             "severity": "warning",
             "message": "A 3-car garage is disproportionate for this home size.",
-            "detail": f"3-car garages suit homes 1,800+ sqft. With {sqft:,} sqft, a 1 or 2-car garage is more appropriate.",
+            "detail": f"3-car garages suit homes of {area(1800)} or more. With {area(sqft)}, a 1 or 2-car garage is more appropriate.",
         })
 
     return issues
@@ -422,7 +454,7 @@ def _generation_debug(constraints: dict, moe: dict, result: dict, timings: dict 
 # ── MOE Endpoints ─────────────────────────────────────────────────────────────
 
 @app.post("/api/generate/moe")
-async def generate_moe(constraints: Constraints, request: Request):
+async def generate_moe(constraints: Constraints, request: Request, _user: User = Depends(require_studio_user)):
     """Generate floor plans using the MOE AI model."""
     try:
         # Check API key for tier limits
@@ -441,7 +473,7 @@ async def generate_moe(constraints: Constraints, request: Request):
                 num_variants = config.TIER_VARIANTS.get(record["tier"], 3)
                 key_store.record_usage(api_key, "generation")
 
-        c = constraints.model_dump()
+        c = engine_constraints(constraints)
         print("[KIYUB POST] /api/generate/moe")
         print(json.dumps(c, indent=2, default=str))
 
@@ -491,6 +523,7 @@ async def generate_moe(constraints: Constraints, request: Request):
         result["rag_reason"] = rag_meta["rag_reason"]
         result["rag_context"] = rag_meta["rag_context"]
         result["generation_debug"] = _generation_debug(c, moe, result, timings)
+        result["plans"] = [floor_plan_to_metric(p) for p in result.get("plans") or []]
         return result
     except HTTPException:
         raise
@@ -504,10 +537,10 @@ async def generate_moe(constraints: Constraints, request: Request):
 
 
 @app.post("/api/moe/experts")
-async def moe_experts(constraints: Constraints):
+async def moe_experts(constraints: Constraints, _user: User = Depends(require_studio_user)):
     """Get expert activation weights for given constraints."""
     try:
-        c = constraints.model_dump()
+        c = engine_constraints(constraints)
         result = predict_floor_plan(c, num_variants=1)
         return {
             "expert_weights": result["expert_weights"],
@@ -560,7 +593,7 @@ async def auth_upgrade(req: UpgradeRequest):
 @app.post("/api/export/dxf")
 async def export_dxf(request: ExportRequest):
     try:
-        dxf_bytes = export_to_dxf(request.floor_plan)
+        dxf_bytes = export_to_dxf(normalize_floor_plan(request.floor_plan), request.unit)
         name = request.floor_plan.get("name", "floor_plan").replace(" ", "_")
         return StreamingResponse(
             io.BytesIO(dxf_bytes),
@@ -574,7 +607,7 @@ async def export_dxf(request: ExportRequest):
 @app.post("/api/export/pdf")
 async def export_pdf(request: ExportRequest):
     try:
-        pdf_bytes = export_to_pdf(request.floor_plan)
+        pdf_bytes = export_to_pdf(normalize_floor_plan(request.floor_plan), request.unit)
         name = str(request.floor_plan.get("name", "floor_plan")).replace(" ", "_")
         return StreamingResponse(
             io.BytesIO(pdf_bytes),
@@ -585,23 +618,10 @@ async def export_pdf(request: ExportRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/cost/regions")
-async def cost_regions():
-    return {"regions": list(REGION_MULTIPLIERS.keys())}
-
-
-@app.post("/api/cost")
-async def cost(request: CostRequest):
-    try:
-        return estimate_cost(request.floor_plan, request.region)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.post("/api/score")
 async def score(request: ScoreRequest):
     try:
-        return score_design(request.floor_plan)
+        return score_design(floor_plan_to_feet(request.floor_plan))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -624,7 +644,8 @@ Keep answers concise and practical. Focus on US residential standards.
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
     try:
-        plan_summary = _summarize_plan(request.floor_plan)
+        engine_plan = floor_plan_to_feet(request.floor_plan)
+        plan_summary = _summarize_plan(engine_plan)
         system_context = f"{CHAT_SYSTEM}\n\nCurrent floor plan:\n{plan_summary}"
 
         messages = [{"role": "system", "content": system_context}]
@@ -640,14 +661,15 @@ async def chat(request: ChatRequest):
             data = resp.json()
 
         reply = data.get("message", {}).get("content", "Sorry, no response.")
-        updated_plan = _extract_plan_from_reply(reply, request.floor_plan)
+        updated_plan = _extract_plan_from_reply(reply, engine_plan)
 
-        return {"reply": reply, "updated_plan": updated_plan}
+        return {"reply": reply, "updated_plan": floor_plan_to_metric(updated_plan) if updated_plan else None}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 def _summarize_plan(plan: dict) -> str:
+    """Chat is a feet-native engine consumer: ``plan`` is already converted to feet."""
     rooms = plan.get("rooms", [])
     lines = [
         f"Name: {plan.get('name', 'Plan')}",

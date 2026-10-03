@@ -15,7 +15,8 @@ import {
   Ruler,
 } from '@phosphor-icons/react'
 import type { OpeningType, SceneDocument } from '../scene-graph/types'
-import { mToFt, ftToM } from '../scene-graph/units'
+import { useFormat } from '../units/UnitsProvider'
+import { MeasurementInput } from './MeasurementInput'
 import { commit, createHistory, redo, undo, type EditorHistory } from '../scene-graph/edit/history'
 import { createWall, deleteWall, joinWalls, moveEndpoint, moveWall, setWallLength, setWallThickness, splitWall } from '../scene-graph/edit/wall-ops'
 import { createOpening, deleteOpening, moveOpening, resizeOpening, rotateOpening, setOpeningType, syncOpeningsToWalls } from '../scene-graph/edit/opening-ops'
@@ -27,6 +28,10 @@ import View3D from './View3D'
 import { PlanAnnotation } from './planAnnotations'
 
 type ViewKind = '2d' | '3d'
+
+const MIN_WALL_LENGTH_M = 0.15
+const MIN_WALL_THICKNESS_M = 0.01
+const MIN_OPENING_WIDTH_M = 0.3
 
 function afterGeom(scene: SceneDocument): SceneDocument {
   return deriveRoomsFromWalls(syncOpeningsToWalls(scene))
@@ -79,7 +84,7 @@ export default function ArchitectCanvas({
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [commentMode, setCommentMode] = useState(false)
   const [draft, setDraft] = useState<{ x: number; y: number; object_id: string | null; body: string } | null>(null)
-  const [lengthDraft, setLengthDraft] = useState('')
+  const fmt = useFormat()
   const skipSync = useRef(false)
   const presentRef = useRef(scene)
   presentRef.current = history.present
@@ -112,10 +117,6 @@ export default function ArchitectCanvas({
   const wall = selected?.kind === 'wall' ? live.walls.find(w => w.id === selected.id) : null
   const opening = selected?.kind === 'opening' ? live.openings.find(o => o.id === selected.id) : null
   const furn = selected?.kind === 'furniture' ? (live.furniture || []).find(f => f.id === selected.id) : null
-
-  useEffect(() => {
-    setLengthDraft(wall ? mToFt(wallLength(wall)).toFixed(2) : '')
-  }, [wall?.id, wall?.start.x, wall?.end.x, wall?.start.y, wall?.end.y])
 
   const compatibleJoin = useMemo(() => {
     if (!wall) return null
@@ -182,17 +183,22 @@ export default function ArchitectCanvas({
 
       {wall && editingEnabled && (
         <div className="architect-context">
-          <span>Wall · {mToFt(wallLength(wall)).toFixed(2)} ft</span>
+          <span>Wall · {fmt.length(wallLength(wall))}</span>
           <label>
             Length
-            <input value={lengthDraft} onChange={e => setLengthDraft(e.target.value)} onBlur={() => {
-              const ft = parseFloat(lengthDraft)
-              if (Number.isFinite(ft) && ft > 0.5) apply(setWallLength(live, wall.id, ftToM(ft)))
-            }} />
+            <MeasurementInput
+              value={wallLength(wall)}
+              min={MIN_WALL_LENGTH_M}
+              onCommit={m => apply(setWallLength(live, wall.id, m))}
+            />
           </label>
           <label>
             Thickness
-            <input type="number" step="0.01" value={wall.thickness} onChange={e => apply(setWallThickness(live, wall.id, Number(e.target.value) || wall.thickness))} />
+            <MeasurementInput
+              value={wall.thickness}
+              min={MIN_WALL_THICKNESS_M}
+              onCommit={m => apply(setWallThickness(live, wall.id, m))}
+            />
           </label>
           <button type="button" onClick={() => apply(splitWall(live, wall.id, 0.5))}>Split</button>
           {compatibleJoin && <button type="button" onClick={() => apply(joinWalls(live, wall.id, compatibleJoin.id))}>Join</button>}
@@ -213,7 +219,11 @@ export default function ArchitectCanvas({
           </label>
           <label>
             Width
-            <input type="number" step="0.05" value={opening.width} onChange={e => apply(resizeOpening(live, opening.id, Number(e.target.value) || opening.width))} />
+            <MeasurementInput
+              value={opening.width}
+              min={MIN_OPENING_WIDTH_M}
+              onCommit={m => apply(resizeOpening(live, opening.id, m))}
+            />
           </label>
           <button type="button" onClick={() => apply(rotateOpening(live, opening.id))}>Rotate</button>
           <button type="button" onClick={() => { apply(deleteOpening(live, opening.id)); setSelected(null) }}>Delete</button>

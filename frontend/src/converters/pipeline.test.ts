@@ -7,7 +7,7 @@ import { QuestionnaireData } from '../types/questionnaire'
 function sample(overrides: (data: QuestionnaireData) => void): QuestionnaireData {
   const data: QuestionnaireData = {
     site: { lotShape: 'rectangle', lotWidth: 10, lotDepth: 15 },
-    house: { floors: 2, bedrooms: 4, bathrooms: 3, livingAreaSqft: 2200 },
+    house: { floors: 2, bedrooms: 4, bathrooms: 3, livingAreaM2: 204 },
     spaces: { homeOffice: true, laundry: 'room', garage: '1car', outdoor: 'deck' },
     preferences: {
       style: 'modern',
@@ -29,7 +29,7 @@ describe('questionnaireToSpecification', () => {
     expect(spec.building.bedrooms).toBe(4)
     expect(spec.building.bathrooms).toBe(3)
     expect(spec.building.floors).toBe(2)
-    expect(spec.building.livingAreaSqft).toBe(2200)
+    expect(spec.building.livingAreaM2).toBe(204)
   })
 
   it('does not substitute a 3-bed / 20x30 program', () => {
@@ -81,7 +81,7 @@ describe('specificationToConstraints', () => {
     expect(constraints.bedrooms).toBe(4)
     expect(constraints.bathrooms).toBe(3)
     expect(constraints.stories).toBe(2)
-    expect(constraints.sqft).toBe(2200)
+    expect(constraints.livingAreaM2).toBe(204)
     expect(constraints.homeOffice).toBe(true)
     expect(constraints.garage).toBe('1car')
     expect(constraints.outdoor).toBe('deck')
@@ -98,13 +98,29 @@ describe('validateQuestionnaire', () => {
     }))
     expect(issues.some(i => i.field === 'lotShape' && i.severity === 'error')).toBe(true)
   })
+
+  it('checks area in m² and reports it in the selected unit', () => {
+    const tooSmall = sample(d => { d.house.livingAreaM2 = 40 })
+    const m = validateQuestionnaire(tooSmall, 'm').find(i => i.field === 'livingAreaM2')
+    const ft = validateQuestionnaire(tooSmall, 'ft').find(i => i.field === 'livingAreaM2')
+    expect(m?.detail).toContain('You set 40 m²')
+    expect(ft?.detail).toContain('You set 430.56 ft²')
+  })
+
+  it('accepts the default living area without a 3-car warning edge case', () => {
+    const issues = validateQuestionnaire(sample(d => {
+      d.house = { floors: 1, bedrooms: 3, bathrooms: 2, livingAreaM2: 1800 * 0.3048 * 0.3048 }
+      d.spaces.garage = '3car'
+    }))
+    expect(issues.some(i => i.field === 'garage')).toBe(false)
+  })
 })
 
 describe('KIYUB v4 20 × 30 lot baseline', () => {
   it('preserves 20m × 30m from questionnaire through specification and constraints', () => {
     const data: QuestionnaireData = {
       site: { lotShape: 'rectangle', lotWidth: 20, lotDepth: 30 },
-      house: { floors: 1, bedrooms: 3, bathrooms: 2, livingAreaSqft: 1800 },
+      house: { floors: 1, bedrooms: 3, bathrooms: 2, livingAreaM2: 167 },
       spaces: { homeOffice: false, laundry: 'room', garage: 'none', outdoor: 'none' },
       preferences: {
         style: 'modern',

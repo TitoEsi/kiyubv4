@@ -1,6 +1,9 @@
 import { FloorPlan, roomCentroid, roomParts } from '../types/floorplan'
 
+const WALL_STROKE_M = 0.046
+
 interface Props {
+  /** Meters; the preview scales to fit. */
   plan: FloorPlan
   width?: number
   height?: number
@@ -79,7 +82,7 @@ export default function FloorPlanPreview({ plan, width = 300, height = 210 }: Pr
   const ox = (width - plan.totalWidth * scale) / 2
   const oy = (height - plan.totalHeight * scale) / 2
 
-  const WALL = Math.max(0.6, scale * 0.15)
+  const WALL = Math.max(0.6, scale * WALL_STROKE_M)
 
   return (
     <svg width={width} height={height} style={{ display: 'block', background: '#faf9f5' }}>

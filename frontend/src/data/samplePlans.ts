@@ -1,4 +1,5 @@
 import { FloorPlan } from '../types/floorplan'
+import { normalizeFloorPlan } from '../units/legacy'
 
 function room(
   id: string, name: string, type: string,
@@ -7,8 +8,11 @@ function room(
   return { id, name, type, x, y, width, height, color }
 }
 
-/** Conceptual sample layouts for the public gallery — not live generation output. */
-export const SAMPLE_PLANS: FloorPlan[] = [
+/**
+ * Conceptual sample layouts for the public gallery — not live generation output.
+ * Authored in feet (no `units` key); exported normalized to meters.
+ */
+const SAMPLE_PLANS_FT: FloorPlan[] = [
   {
     id: 'sample-a',
     name: 'Courtyard bungalow',
@@ -57,3 +61,5 @@ export const SAMPLE_PLANS: FloorPlan[] = [
     ],
   },
 ]
+
+export const SAMPLE_PLANS: FloorPlan[] = SAMPLE_PLANS_FT.map(normalizeFloorPlan)

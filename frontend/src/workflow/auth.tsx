@@ -8,6 +8,7 @@ interface AuthState {
   ready: boolean
   login: (email: string, password: string) => Promise<WorkflowUser>
   applySession: (token: string, user: WorkflowUser) => void
+  updateUser: (user: WorkflowUser) => void
   logout: () => void
 }
 
@@ -106,6 +107,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setToken(nextToken)
       setUser(nextUser)
     },
+    updateUser: nextUser => setUser(nextUser),
     logout: () => {
       if (isSupabaseAuth() && supabase) void supabase.auth.signOut()
       persistToken(null)

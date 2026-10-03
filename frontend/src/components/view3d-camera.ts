@@ -1,6 +1,11 @@
 import { roomCentroid, roomParts, type FloorPlan, type Room } from '../types/floorplan'
+import { toMeters } from '../units/measurement'
 
-export const VIEW3D_SCALE = 0.09
+/**
+ * Three.js world units per meter of geometry. A fixed presentation scale (0.09 world
+ * units per foot, unchanged from earlier releases); it does not follow the display unit.
+ */
+export const WORLD_UNITS_PER_METER = 0.09 / toMeters(1, 'ft')
 
 export type View3DMode = 'exterior' | 'dollhouse' | 'walkthrough' | 'topview'
 
@@ -30,7 +35,8 @@ export interface ViewCameraConfig {
 
 type PlanBounds = Pick<FloorPlan, 'rooms' | 'totalWidth' | 'totalHeight'>
 
-export function buildingBounds(plan: PlanBounds, scale = VIEW3D_SCALE): BuildingBounds {
+/** Plan in meters -> world-space bounds. */
+export function buildingBounds(plan: PlanBounds, scale = WORLD_UNITS_PER_METER): BuildingBounds {
   let minX = Infinity
   let maxX = -Infinity
   let minZ = Infinity
@@ -59,7 +65,7 @@ export function buildingBounds(plan: PlanBounds, scale = VIEW3D_SCALE): Building
 export function walkStartPosition(
   rooms: Room[],
   wallH: number,
-  scale = VIEW3D_SCALE,
+  scale = WORLD_UNITS_PER_METER,
 ): Vec3 {
   const room = rooms[0]
   if (!room) return [0, wallH * 0.62, 0]
@@ -80,7 +86,7 @@ export function viewCameraConfig(
       kind: 'orthographic',
       position: [cx, Math.max(wallH * 8, span * 2.2), cz],
       target: [cx, 0, cz],
-      // Smaller plan-y (ArchPlan north) maps to -Z. camera.up must not be
+      // Smaller plan-y (plan north) maps to -Z. camera.up must not be
       // parallel to the view axis (default 0,1,0 looks down -Y).
       up: [0, 0, -1],
       halfWidth: spanX / 2 * 1.2,

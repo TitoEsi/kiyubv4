@@ -12,7 +12,8 @@ export interface ArchitecturalSpecification {
     floors: number
     bedrooms: number
     bathrooms: number
-    livingAreaSqft: number
+    /** Square meters. */
+    livingAreaM2: number
   }
   rooms: {
     required: string[]

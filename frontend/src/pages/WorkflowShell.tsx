@@ -4,10 +4,11 @@ import ConfirmDialog from '../components/ConfirmDialog'
 import KiyubLogo from '../components/KiyubLogo'
 import NotificationBell from '../components/NotificationBell'
 import ThemeToggle from '../components/ThemeToggle'
+import UnitSelect from '../components/UnitSelect'
 import WorkflowFooter from '../components/WorkflowFooter'
 import { useAuth } from '../workflow/auth'
 import { roleHome } from '../workflow/paths'
-import { canOpenStudio, roleNavItems } from '../workflow/roleNav'
+import { roleNavItems } from '../workflow/roleNav'
 
 function navClass({ isActive }: { isActive: boolean }) {
   return isActive ? 'wf-nav-link active' : 'wf-nav-link'
@@ -15,12 +16,10 @@ function navClass({ isActive }: { isActive: boolean }) {
 
 export default function WorkflowShell({
   status,
-  scratch,
   flush,
   children,
 }: {
   status?: string
-  scratch?: boolean
   flush?: boolean
   children: ReactNode
 }) {
@@ -28,7 +27,6 @@ export default function WorkflowShell({
   const nav = useNavigate()
   const home = roleHome(user?.role)
   const navItems = roleNavItems(user?.role)
-  const canStudio = canOpenStudio(user?.role)
   const [confirmSignOut, setConfirmSignOut] = useState(false)
 
   function signOut() {
@@ -53,13 +51,12 @@ export default function WorkflowShell({
             ))}
           </nav>
         )}
-        {scratch && <span className="wf-scratch">Scratch studio</span>}
         {status && <span className="wf-status-chip">{status}</span>}
         <div className="wf-top-end">
+          {user && <UnitSelect />}
           <ThemeToggle />
           {user && <NotificationBell />}
           {user && <span className="wf-user">{user.email}</span>}
-          {canStudio && <Link className="wf-link" to="/sandbox">Studio</Link>}
           {user ? (
             <button className="wf-action" type="button" onClick={() => setConfirmSignOut(true)}>Sign out</button>
           ) : (

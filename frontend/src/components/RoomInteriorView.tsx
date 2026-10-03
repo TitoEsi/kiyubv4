@@ -3,6 +3,7 @@ import { Canvas, useFrame } from '@react-three/fiber'
 import { OrbitControls, PerspectiveCamera, Environment } from '@react-three/drei'
 import * as THREE from 'three'
 import { Room } from '../types/floorplan'
+import { useFormat } from '../units/UnitsProvider'
 
 // US-realistic interior materials per room type
 const ROOM_MATS: Record<string, {
@@ -254,8 +255,8 @@ function Desk({ rw, rd }: { rw: number; rd: number }) {
 // ─── Room interior scene ──────────────────────────────────────────────────────
 
 function RoomScene({ room, wallH }: { room: Room; wallH: number }) {
-  const rw = (room.width * 0.3048)   // feet → meters approx for scale
-  const rd = (room.height * 0.3048)
+  const rw = room.width
+  const rd = room.height
   const mat = getMat(room.type)
   const t = room.type.toLowerCase().replace(/-/g, '_')
 
@@ -360,15 +361,18 @@ function RoomScene({ room, wallH }: { room: Room; wallH: number }) {
 // ─── Main exported component ──────────────────────────────────────────────────
 
 interface Props {
+  /** Room geometry in meters. */
   room: Room
+  /** Meters. */
   ceilingHeight: number
   onClose: () => void
 }
 
 export default function RoomInteriorView({ room, ceilingHeight, onClose }: Props) {
-  const wallH = ceilingHeight * 0.3048
-  const rw = room.width * 0.3048
-  const rd = room.height * 0.3048
+  const fmt = useFormat()
+  const wallH = ceilingHeight
+  const rw = room.width
+  const rd = room.height
 
   const camX = 0
   const camY = wallH * 0.42
@@ -381,7 +385,7 @@ export default function RoomInteriorView({ room, ceilingHeight, onClose }: Props
           <div className="room-interior-swatch" style={{ background: room.color }} />
           <span>{room.name}</span>
           <span className="room-interior-dims">
-            {room.width.toFixed(0)}' × {room.height.toFixed(0)}' · {Math.round(room.width * room.height)} sq ft · {ceilingHeight}ft ceiling
+            {fmt.dims(room.width, room.height)} · {fmt.area(room.width * room.height)} · {fmt.length(ceilingHeight)} ceiling
           </span>
         </div>
         <button className="room-interior-close" onClick={onClose}>✕ Close</button>
@@ -408,11 +412,11 @@ export default function RoomInteriorView({ room, ceilingHeight, onClose }: Props
       </div>
 
       <div className="room-interior-info">
-        <div className="ri-stat"><span>Width</span><strong>{room.width.toFixed(0)}'</strong></div>
-        <div className="ri-stat"><span>Depth</span><strong>{room.height.toFixed(0)}'</strong></div>
-        <div className="ri-stat"><span>Area</span><strong>{Math.round(room.width * room.height)} sq ft</strong></div>
-        <div className="ri-stat"><span>Ceiling</span><strong>{ceilingHeight} ft</strong></div>
-        <div className="ri-stat"><span>Perimeter</span><strong>{Math.round(2 * (room.width + room.height))} ft</strong></div>
+        <div className="ri-stat"><span>Width</span><strong>{fmt.length(room.width)}</strong></div>
+        <div className="ri-stat"><span>Depth</span><strong>{fmt.length(room.height)}</strong></div>
+        <div className="ri-stat"><span>Area</span><strong>{fmt.area(room.width * room.height)}</strong></div>
+        <div className="ri-stat"><span>Ceiling</span><strong>{fmt.length(ceilingHeight)}</strong></div>
+        <div className="ri-stat"><span>Perimeter</span><strong>{fmt.length(2 * (room.width + room.height))}</strong></div>
       </div>
     </div>
   )

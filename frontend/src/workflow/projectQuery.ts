@@ -79,6 +79,42 @@ export function filterAndSortClients(rows: ArchitectClientRow[], query: string, 
   return sortClients(rows.filter(r => clientMatches(r, query)), sort)
 }
 
+export type ClientGroup = {
+  email: string
+  full_name?: string | null
+  architect_email?: string | null
+  created_at: string | null
+  last_activity: string | null
+  projects: ArchitectClientRow[]
+}
+
+export function groupClientsByEmail(rows: ArchitectClientRow[]): ClientGroup[] {
+  const groups = new Map<string, ClientGroup>()
+  const stamp = (iso?: string | null) => (iso ? new Date(iso).getTime() : 0)
+  for (const row of rows) {
+    const key = row.email.toLowerCase()
+    const existing = groups.get(key)
+    if (!existing) {
+      groups.set(key, {
+        email: row.email,
+        full_name: row.full_name,
+        architect_email: row.architect_email,
+        created_at: row.created_at,
+        last_activity: row.last_activity,
+        projects: [row],
+      })
+      continue
+    }
+    existing.projects.push(row)
+    if (row.full_name) existing.full_name = row.full_name
+    if (stamp(row.last_activity) > stamp(existing.last_activity)) existing.last_activity = row.last_activity
+    if (stamp(row.created_at) && (!existing.created_at || stamp(row.created_at) < stamp(existing.created_at))) {
+      existing.created_at = row.created_at
+    }
+  }
+  return [...groups.values()]
+}
+
 export function floorPlanLabel(project: Project): string {
   if (project.generation_status === 'running') return 'Generating'
   if (project.has_floor_plan) return 'Ready'

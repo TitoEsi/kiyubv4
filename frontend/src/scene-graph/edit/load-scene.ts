@@ -1,14 +1,19 @@
 import type { FloorPlan } from '../../types/floorplan'
 import type { SceneDocument } from '../types'
 import { floorPlanToSceneDocument, type LotMeters } from '../adapters/floorplan-to-scene-document'
-import { ftToM } from '../units'
+import { normalizeFloorPlan } from '../../units/legacy'
 import { assignJunctions, bootstrapWallsFromRooms } from './bootstrap-walls'
 import { syncOpeningsToWalls } from './opening-ops'
 import { fidelityReport } from '../adapters/scene-entities'
 
-export function defaultLotFromPlan(plan: FloorPlan, lot?: Partial<LotMeters>): LotMeters {
-  const w = lot?.lotWidth && lot.lotWidth > 0 ? lot.lotWidth : Math.max(ftToM(plan.totalWidth || 40), 8)
-  const d = lot?.lotDepth && lot.lotDepth > 0 ? lot.lotDepth : Math.max(ftToM(plan.totalHeight || 35), 8)
+const FALLBACK_LOT_WIDTH_M = 12.192
+const FALLBACK_LOT_DEPTH_M = 10.668
+const MIN_LOT_M = 8
+
+export function defaultLotFromPlan(input: FloorPlan, lot?: Partial<LotMeters>): LotMeters {
+  const plan = normalizeFloorPlan(input)
+  const w = lot?.lotWidth && lot.lotWidth > 0 ? lot.lotWidth : Math.max(plan.totalWidth || FALLBACK_LOT_WIDTH_M, MIN_LOT_M)
+  const d = lot?.lotDepth && lot.lotDepth > 0 ? lot.lotDepth : Math.max(plan.totalHeight || FALLBACK_LOT_DEPTH_M, MIN_LOT_M)
   return { lotWidth: w, lotDepth: d, stories: lot?.stories || 1 }
 }
 

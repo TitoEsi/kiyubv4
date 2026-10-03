@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  VIEW3D_SCALE,
+  WORLD_UNITS_PER_METER as W,
   buildingBounds,
   viewCameraConfig,
   walkStartPosition,
@@ -8,23 +8,27 @@ import {
 import type { FloorPlan } from '../types/floorplan'
 
 const plan: Pick<FloorPlan, 'rooms' | 'totalWidth' | 'totalHeight'> = {
-  totalWidth: 34,
-  totalHeight: 16,
+  totalWidth: 10.4,
+  totalHeight: 4.8,
   rooms: [
-    { id: 'r1', name: 'Living', type: 'living_room', x: 0, y: 0, width: 20, height: 16, color: '#ccc' },
-    { id: 'r2', name: 'Bed', type: 'bedroom', x: 20, y: 0, width: 14, height: 16, color: '#ddd' },
+    { id: 'r1', name: 'Living', type: 'living_room', x: 0, y: 0, width: 6, height: 4.8, color: '#ccc' },
+    { id: 'r2', name: 'Bed', type: 'bedroom', x: 6, y: 0, width: 4.4, height: 4.8, color: '#ddd' },
   ],
 }
 
-const wallH = 9 * VIEW3D_SCALE
+const wallH = 2.7432 * W
 
 describe('view3d-camera', () => {
+  it('keeps the legacy presentation scale (0.09 world units per foot)', () => {
+    expect(W * 0.3048).toBeCloseTo(0.09, 12)
+  })
+
   it('centers bounds on the building', () => {
     const bounds = buildingBounds(plan)
-    expect(bounds.cx).toBeCloseTo(17 * VIEW3D_SCALE)
-    expect(bounds.cz).toBeCloseTo(8 * VIEW3D_SCALE)
-    expect(bounds.spanX).toBeCloseTo(34 * VIEW3D_SCALE)
-    expect(bounds.spanZ).toBeCloseTo(16 * VIEW3D_SCALE)
+    expect(bounds.cx).toBeCloseTo(5.2 * W)
+    expect(bounds.cz).toBeCloseTo(2.4 * W)
+    expect(bounds.spanX).toBeCloseTo(10.4 * W)
+    expect(bounds.spanZ).toBeCloseTo(4.8 * W)
   })
 
   it('gives each mode a different camera kind or position', () => {
@@ -64,8 +68,8 @@ describe('view3d-camera', () => {
   it('places walk at eye height in the first room', () => {
     const walk = walkStartPosition(plan.rooms, wallH)
     expect(walk[1]).toBeCloseTo(wallH * 0.62)
-    expect(walk[0]).toBeCloseTo(10 * VIEW3D_SCALE)
-    expect(walk[2]).toBeCloseTo(8 * VIEW3D_SCALE)
+    expect(walk[0]).toBeCloseTo(3 * W)
+    expect(walk[2]).toBeCloseTo(2.4 * W)
     const cfg = viewCameraConfig('walkthrough', buildingBounds(plan), wallH, walk)
     expect(cfg.position[1]).toBeCloseTo(wallH * 0.62)
     expect(cfg.kind).toBe('perspective')

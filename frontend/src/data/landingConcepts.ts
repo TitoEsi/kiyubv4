@@ -1,4 +1,5 @@
 import { FloorPlan } from '../types/floorplan'
+import { normalizeFloorPlan } from '../units/legacy'
 
 function room(
   id: string, name: string, type: string,
@@ -22,7 +23,8 @@ export type LandingConcept = {
   isExample: true
 }
 
-export const LANDING_CONCEPTS: LandingConcept[] = [
+/** Example plans are authored in feet (no `units` key); exported normalized to meters. */
+const LANDING_CONCEPTS_FT: LandingConcept[] = [
   {
     id: 'modern',
     title: 'Modern Residence',
@@ -238,3 +240,5 @@ export const LANDING_CONCEPTS: LandingConcept[] = [
     },
   },
 ]
+
+export const LANDING_CONCEPTS: LandingConcept[] = LANDING_CONCEPTS_FT.map(c => ({ ...c, plan: normalizeFloorPlan(c.plan) }))

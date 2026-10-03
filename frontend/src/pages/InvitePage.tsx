@@ -13,6 +13,7 @@ export default function InvitePage() {
   const [email, setEmail] = useState('')
   const [fullName, setFullName] = useState('')
   const [projectName, setProjectName] = useState('')
+  const [architectName, setArchitectName] = useState('')
   const [status, setStatus] = useState('')
   const [needsRegistration, setNeedsRegistration] = useState(true)
   const [password, setPassword] = useState('')
@@ -28,12 +29,17 @@ export default function InvitePage() {
       .then(info => {
         setEmail(info.email)
         setProjectName(info.project_name || 'KIYUB')
+        setArchitectName(info.architect_name || 'your architect')
         setStatus(info.status)
         setNeedsRegistration(info.needs_registration)
       })
       .catch(() => setError('This invitation is invalid or has expired.'))
       .finally(() => setReady(true))
   }, [token])
+
+  const invitedEmail = email.toLowerCase()
+  const signedInAsInvitee = !!(user && user.email.toLowerCase() === invitedEmail)
+  const wrongAccount = !!(user && invitedEmail && user.email.toLowerCase() !== invitedEmail)
 
   async function finishAccept() {
     if (!token) return
@@ -44,14 +50,19 @@ export default function InvitePage() {
   async function onSubmit(e: FormEvent) {
     e.preventDefault()
     if (!token) return
-    const completing = needsRegistration || !user || user.email.toLowerCase() !== email.toLowerCase()
-    if (completing && password !== confirm) {
-      setError('Passwords do not match.')
+    if (wrongAccount) {
+      setError(`This invitation is for ${email}. Sign out and sign in as that client.`)
       return
     }
-    if (completing && !agreed) {
-      setError('Agree to the Terms and Privacy Policy to continue.')
-      return
+    if (needsRegistration) {
+      if (password !== confirm) {
+        setError('Passwords do not match.')
+        return
+      }
+      if (!agreed) {
+        setError('Agree to the Terms and Privacy Policy to continue.')
+        return
+      }
     }
     setLoading(true)
     setError(null)
@@ -62,32 +73,32 @@ export default function InvitePage() {
         nav(data.project?.id ? `/projects/${data.project.id}` : '/client')
         return
       }
-      if (user && user.email.toLowerCase() === email.toLowerCase()) {
+      if (signedInAsInvitee) {
         await finishAccept()
         return
       }
-      if (user && user.email.toLowerCase() !== email.toLowerCase()) {
-        logout()
-      }
       const next = await apiLogin(email, password)
       applySession(next.token, next.user)
-      const result = await acceptInvitation(token)
-      nav(result.project?.id ? `/projects/${result.project.id}` : '/client')
+      await finishAccept()
     } catch (err: unknown) {
       const ax = err as { response?: { data?: { detail?: string } } }
-      setError(ax.response?.data?.detail || 'Could not complete your account')
+      setError(ax.response?.data?.detail || 'Could not accept this invitation')
     } finally {
       setLoading(false)
     }
   }
 
   const blocked = status && status !== 'PENDING'
+  const title = needsRegistration ? 'Complete Your Account' : `You've been invited to a new project by ${architectName}`
+  const lede = needsRegistration
+    ? `You have been invited to KIYUB to work on ${projectName}. Create your password to continue. Accepting creates the project.`
+    : `Project: ${projectName}. Accepting attaches this project to your existing account.`
 
   return (
     <WorkflowShell>
       <div className="studio-home">
         <p className="studio-meta">Client invitation</p>
-        <h1 className="studio-page-title">Complete Your Account</h1>
+        <h1 className="studio-page-title">{title}</h1>
         {!ready && <p className="wf-hint">Loading invitation…</p>}
         {error && <div className="error-msg" role="alert">{error}</div>}
         {ready && blocked && (
@@ -95,13 +106,14 @@ export default function InvitePage() {
         )}
         {ready && !blocked && (
           <form className="studio-stack" onSubmit={onSubmit}>
-            <p>
-              {needsRegistration
-                ? `You have been invited to KIYUB to work on ${projectName}. Create your password to continue. Accepting creates the project.`
-                : `Sign in as ${email} to accept. Accepting creates the project.`}
-            </p>
+            <p>{lede}</p>
             <label htmlFor="invite-email">Email</label>
             <input id="invite-email" value={email} readOnly />
+            {wrongAccount && (
+              <p className="wf-hint">
+                You are signed in as {user?.email}. Sign out and sign in as {email} to accept.
+              </p>
+            )}
             {needsRegistration && (
               <>
                 <label htmlFor="invite-name">Full name</label>
@@ -111,36 +123,47 @@ export default function InvitePage() {
                   onChange={e => setFullName(e.target.value)}
                   required
                 />
-              </>
-            )}
-            {(needsRegistration || !user || user.email.toLowerCase() !== email.toLowerCase()) && (
-              <>
-                <label htmlFor="invite-password">{needsRegistration ? 'Password' : 'Password'}</label>
+                <label htmlFor="invite-password">Password</label>
                 <PasswordField
                   id="invite-password"
                   value={password}
                   onChange={setPassword}
-                  autoComplete={needsRegistration ? 'new-password' : 'current-password'}
+                  autoComplete="new-password"
                   required
                 />
-                {needsRegistration && (
-                  <>
-                    <label htmlFor="invite-confirm">Confirm password</label>
-                    <PasswordField
-                      id="invite-confirm"
-                      value={confirm}
-                      onChange={setConfirm}
-                      autoComplete="new-password"
-                      required
-                    />
-                  </>
-                )}
+                <label htmlFor="invite-confirm">Confirm password</label>
+                <PasswordField
+                  id="invite-confirm"
+                  value={confirm}
+                  onChange={setConfirm}
+                  autoComplete="new-password"
+                  required
+                />
                 <TermsAgree id="invite-terms" checked={agreed} onChange={setAgreed} />
               </>
             )}
-            <button className="catalog-generate-btn" type="submit" disabled={loading}>
-              {loading ? 'Continuing…' : needsRegistration ? 'Complete account' : 'Accept invitation'}
-            </button>
+            {!needsRegistration && !signedInAsInvitee && !wrongAccount && (
+              <>
+                <label htmlFor="invite-password">Password</label>
+                <PasswordField
+                  id="invite-password"
+                  value={password}
+                  onChange={setPassword}
+                  autoComplete="current-password"
+                  required
+                />
+              </>
+            )}
+            <div className="studio-toolbar">
+              {wrongAccount && (
+                <button className="back-btn" type="button" onClick={() => logout()}>
+                  Sign out
+                </button>
+              )}
+              <button className="catalog-generate-btn" type="submit" disabled={loading || wrongAccount}>
+                {loading ? 'Continuing…' : needsRegistration ? 'Complete account' : 'Accept invitation'}
+              </button>
+            </div>
           </form>
         )}
       </div>

@@ -2,20 +2,19 @@
  * Single SceneDocument (meters) → Three.js world mapping.
  *
  * 2D (x, y) → 3D (u(x), height, u(y))
- * World unit = feet * VIEW3D_SCALE (legacy presentation scale).
+ * u(m) = m * WORLD_UNITS_PER_METER (fixed presentation scale, independent of display unit).
  *
  * THREE.Shape lives in XY. After Rx(-π/2): (sx, sy, 0) → (sx, 0, -sy).
  * shapeXY uses sy = -u(y) so the floor lands at Z = +u(y), same as walls.
  */
-import { mToFt } from '../units'
-import { VIEW3D_SCALE } from '../../components/view3d-camera'
+import { WORLD_UNITS_PER_METER } from '../../components/view3d-camera'
 import type { Point2D, SceneDocument, Wall } from '../types'
 import { wallLength } from '../edit/geometry'
 
-export const SCENE_WORLD_SCALE = VIEW3D_SCALE
+export const SCENE_WORLD_SCALE = WORLD_UNITS_PER_METER
 
 export function metersToWorld(meters: number, scale = SCENE_WORLD_SCALE): number {
-  return mToFt(meters) * scale
+  return meters * scale
 }
 
 export function toWorld(x: number, y: number, scale = SCENE_WORLD_SCALE): { x: number; z: number } {

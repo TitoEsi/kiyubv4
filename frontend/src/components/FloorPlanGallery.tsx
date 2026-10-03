@@ -1,5 +1,6 @@
 import { FloorPlan } from '../types/floorplan'
 import FloorPlanPreview from './FloorPlanPreview'
+import { useFormat } from '../units/UnitsProvider'
 
 interface Props {
   plans: FloorPlan[]
@@ -30,11 +31,12 @@ function bathroomCount(plan: FloorPlan) {
   ).length
 }
 const _UNCONDITIONED = new Set(['garage', 'patio', 'deck', 'rear_patio', 'outdoor_living', 'front_porch'])
-function totalSqft(plan: FloorPlan) {
-  return Math.round(plan.rooms.filter(r => !_UNCONDITIONED.has(r.type)).reduce((s, r) => s + r.width * r.height, 0))
+function livingAreaM2(plan: FloorPlan) {
+  return plan.rooms.filter(r => !_UNCONDITIONED.has(r.type)).reduce((s, r) => s + r.width * r.height, 0)
 }
 
 export default function FloorPlanGallery({ plans, loading, onSelect, selectedId }: Props) {
+  const fmt = useFormat()
   if (loading) {
     return (
       <div className="charrette-loading" aria-busy="true" aria-live="polite">
@@ -82,9 +84,9 @@ export default function FloorPlanGallery({ plans, loading, onSelect, selectedId 
         {plans.map((plan, idx) => {
           const beds = bedroomCount(plan)
           const baths = bathroomCount(plan)
-          const sqft = totalSqft(plan)
+          const area = fmt.area(livingAreaM2(plan))
           const label = CARD_LABELS[idx] ?? String(idx + 1)
-          const fp = `${Math.round(plan.totalWidth)}' × ${Math.round(plan.totalHeight)}'`
+          const fp = fmt.dims(plan.totalWidth, plan.totalHeight)
           const pressed = selectedId === plan.id
 
           return (
@@ -102,7 +104,7 @@ export default function FloorPlanGallery({ plans, loading, onSelect, selectedId 
               <div className="charrette-card-footer">
                 <div className="charrette-card-stats">
                   <span className="studio-meta">Scheme {label}</span>
-                  <span className="charrette-stat">{sqft.toLocaleString()} sqft</span>
+                  <span className="charrette-stat">{area}</span>
                   <span className="charrette-stat-sep">·</span>
                   {beds > 0 && <span className="charrette-stat">{beds} bed</span>}
                   {beds > 0 && baths > 0 && <span className="charrette-stat-sep">·</span>}
