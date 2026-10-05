@@ -2,6 +2,7 @@ import axios from 'axios'
 import { FloorPlan } from '../types/floorplan'
 import { QuestionnaireData } from '../types/questionnaire'
 import type { MeasurementUnit } from '../units/measurement'
+import type { Role } from './permissions'
 import { normalizeCommentCoords, normalizeFloorPlan, normalizeQuestionnaire } from '../units/legacy'
 
 const BASE_URL = import.meta.env.VITE_API_URL
@@ -27,7 +28,7 @@ function metricPlan<T extends { floor_plan?: FloorPlan } | null | undefined>(ite
 export interface WorkflowUser {
   id: string
   email: string
-  role: 'CLIENT' | 'ARCHITECT' | 'MAIN_ADMIN' | 'IT_PERSONNEL'
+  role: Role
   approved: boolean
   suspended?: boolean
   deleted_at?: string | null
@@ -72,6 +73,18 @@ export interface Revision {
   is_current?: boolean
   floor_plan?: FloorPlan
   scene_document?: Record<string, unknown>
+  source_revision_id?: string | null
+  created_at?: string | null
+  submitted_at?: string | null
+}
+
+export interface CommentEdit {
+  previous: string | null
+  body: string | null
+  edited_by: string | null
+  edited_by_email?: string | null
+  edited_by_role?: string | null
+  edited_at: string | null
 }
 
 export interface Comment {
@@ -86,6 +99,43 @@ export interface Comment {
   y?: number | null
   coord_units?: string | null
   revision_id?: string | null
+  revision_version?: number | null
+  parent_id?: string | null
+  updated_at?: string | null
+  edit_history?: CommentEdit[]
+  resolved?: boolean
+  resolved_at?: string | null
+  resolved_by?: string | null
+  resolved_by_email?: string | null
+  resolved_by_role?: string | null
+  resolution_note?: string | null
+  resolution_revision_id?: string | null
+  resolution_version?: number | null
+}
+
+export interface ActivityEntry {
+  id: string
+  event_type: string
+  created_at: string | null
+  actor_id?: string | null
+  actor_email?: string | null
+  /** May be a retired role (e.g. IT_PERSONNEL) when the actor account was deleted. */
+  actor_role?: string | null
+  actor_deleted?: boolean
+  revision_id?: string | null
+  version?: number | null
+  version_viewable?: boolean
+  target?: string | null
+  metadata: Record<string, unknown>
+  comment?: {
+    id: string
+    body: string
+    parent_id?: string | null
+    resolved: boolean
+    resolution_note?: string | null
+    resolution_version?: number | null
+    resolution_revision_id?: string | null
+  } | null
 }
 
 export interface Notification {
@@ -134,6 +184,8 @@ export interface AuditEvent {
   event_type: string
   actor_id?: string | null
   actor_email?: string | null
+  actor_role?: string | null
+  actor_deleted?: boolean
   project_id?: string | null
   target?: string | null
   metadata?: Record<string, unknown>
@@ -229,11 +281,6 @@ export async function selectCandidate(projectId: string, candidateId: string) {
   return data
 }
 
-export async function acceptCandidate(projectId: string, candidateId: string) {
-  const { data } = await api.post(`/projects/${projectId}/candidates/${candidateId}/accept`)
-  return metricPlan(data as Revision)
-}
-
 export async function listRevisions(id: string) {
   const { data } = await api.get(`/projects/${id}/revisions`)
   return (data as Revision[]).map(metricPlan)
@@ -241,20 +288,6 @@ export async function listRevisions(id: string) {
 
 export async function getRevision(id: string) {
   const { data } = await api.get(`/revisions/${id}`)
-  return metricPlan(data as Revision)
-}
-
-export async function saveDesign(
-  revisionId: string,
-  floor_plan: FloorPlan,
-  expected_revision_id?: string,
-  scene_document?: unknown,
-) {
-  const { data } = await api.put(`/revisions/${revisionId}/design`, {
-    floor_plan,
-    expected_revision_id,
-    scene_document,
-  })
   return metricPlan(data as Revision)
 }
 
@@ -286,8 +319,24 @@ export async function patchComment(
   return normalizeCommentCoords(data as Comment)
 }
 
-export async function deleteComment(projectId: string, commentId: string) {
-  await api.delete(`/projects/${projectId}/comments/${commentId}`)
+export async function replyToComment(projectId: string, parentId: string, body: string) {
+  const { data } = await api.post(`/projects/${projectId}/comments`, { body, parent_id: parentId })
+  return normalizeCommentCoords(data as Comment)
+}
+
+export async function resolveComment(projectId: string, commentId: string, resolved: boolean, note?: string) {
+  const { data } = await api.post(`/projects/${projectId}/comments/${commentId}/resolve`, { resolved, note })
+  return normalizeCommentCoords(data as Comment)
+}
+
+export async function listProjectActivity(projectId: string) {
+  const { data } = await api.get(`/projects/${projectId}/activity`)
+  return data as ActivityEntry[]
+}
+
+export async function restoreRevision(revisionId: string) {
+  const { data } = await api.post(`/revisions/${revisionId}/restore`)
+  return metricPlan(data as Revision)
 }
 
 export async function submitReview(
@@ -295,7 +344,7 @@ export async function submitReview(
   payload?: { scene_document?: unknown; floor_plan?: unknown },
 ) {
   const { data } = await api.post(`/projects/${id}/submit-review`, payload || {})
-  return data as Project & { submitted_revision_id?: string; version?: number }
+  return data as Project & { submitted_revision_id?: string; version?: number; created?: boolean }
 }
 
 export async function resumeProject(id: string) {

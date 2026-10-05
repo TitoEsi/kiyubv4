@@ -3,7 +3,7 @@ import WorkflowShell from './WorkflowShell'
 import StatCard from '../components/StatCard'
 import { AuditEvent, listAccounts, listAudit, listProjects, Project, WorkflowUser } from '../workflow/api'
 
-export default function ITAnalyticsPage() {
+export default function AdminAnalyticsPage() {
   const [users, setUsers] = useState<WorkflowUser[]>([])
   const [projects, setProjects] = useState<Project[]>([])
   const [audit, setAudit] = useState<AuditEvent[]>([])
@@ -48,14 +48,14 @@ export default function ITAnalyticsPage() {
           <p className="wf-hint">No analytics yet. Counts appear when accounts, projects, or audit events exist.</p>
         )}
         <div className="studio-overview">
-          <StatCard label="Projects" value={stats.projects} />
-          <StatCard label="Active projects" value={stats.active} />
-          <StatCard label="Published" value={stats.published} />
-          <StatCard label="Clients" value={stats.clients} to="/it/clients" />
-          <StatCard label="Architects" value={stats.architects} to="/it/architects" />
-          <StatCard label="Suspended" value={stats.suspended} to="/it/architects" />
-          <StatCard label="Review events" value={stats.reviews} to="/it/history" />
-          <StatCard label="Audit events" value={stats.events} to="/it/history" />
+          <StatCard label="Projects" value={stats.projects} to="/admin/projects" />
+          <StatCard label="Active projects" value={stats.active} to="/admin/projects" />
+          <StatCard label="Published" value={stats.published} to="/admin/projects" />
+          <StatCard label="Clients" value={stats.clients} to="/admin/clients" />
+          <StatCard label="Architects" value={stats.architects} to="/admin/architects" />
+          <StatCard label="Suspended" value={stats.suspended} to="/admin/architects" />
+          <StatCard label="Review events" value={stats.reviews} to="/admin/history" />
+          <StatCard label="Audit events" value={stats.events} to="/admin/history" />
         </div>
       </div>
     </WorkflowShell>

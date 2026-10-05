@@ -16,7 +16,7 @@ from .schemas import (
     BriefBody,
     CommentBody,
     CommentPatch,
-    DesignBody,
+    CommentResolveBody,
     InquiryCreate,
     InvitationCreate,
     LoginBody,
@@ -144,12 +144,6 @@ def select_candidate(project_id: str, candidate_id: str, user: User = Depends(ge
     return {"id": cand.id, "selected_by_client": cand.selected_by_client}
 
 
-@router.post("/projects/{project_id}/candidates/{candidate_id}/accept")
-def accept_candidate(project_id: str, candidate_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    rev = svc.accept_candidate(db, actor_from(user), project_id, candidate_id)
-    return svc.serialize_revision(rev, current_id=rev.id, include_payload=True)
-
-
 @router.get("/projects/{project_id}/revisions")
 def revisions(project_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return svc.list_revisions(db, actor_from(user), project_id)
@@ -158,14 +152,6 @@ def revisions(project_id: str, user: User = Depends(get_current_user), db: Sessi
 @router.get("/revisions/{revision_id}")
 def get_revision(revision_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return svc.get_revision(db, actor_from(user), revision_id)
-
-
-@router.put("/revisions/{revision_id}/design")
-def put_design(revision_id: str, body: DesignBody, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    rev = svc.update_design(
-        db, actor_from(user), revision_id, body.floor_plan, body.expected_revision_id, body.scene_document,
-    )
-    return svc.serialize_revision(rev, current_id=rev.id, include_payload=True)
 
 
 @router.put("/projects/{project_id}/working-design")
@@ -177,6 +163,7 @@ def put_working_design(project_id: str, body: WorkingDesignBody, user: User = De
 def post_comment(project_id: str, body: CommentBody, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     c = svc.add_comment(
         db, actor_from(user), project_id, body.body, body.revision_id, body.object_id, body.stage, body.x, body.y,
+        parent_id=body.parent_id,
     )
     return svc.serialize_comment(c, db)
 
@@ -192,10 +179,20 @@ def patch_comment(project_id: str, comment_id: str, body: CommentPatch, user: Us
     return svc.serialize_comment(c, db)
 
 
-@router.delete("/projects/{project_id}/comments/{comment_id}")
-def remove_comment(project_id: str, comment_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    svc.delete_comment(db, actor_from(user), project_id, comment_id)
-    return {"ok": True}
+@router.post("/projects/{project_id}/comments/{comment_id}/resolve")
+def resolve_comment(project_id: str, comment_id: str, body: CommentResolveBody, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    c = svc.resolve_comment(db, actor_from(user), project_id, comment_id, body.resolved, body.note)
+    return svc.serialize_comment(c, db)
+
+
+@router.get("/projects/{project_id}/activity")
+def project_activity(project_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return svc.list_project_activity(db, actor_from(user), project_id)
+
+
+@router.post("/revisions/{revision_id}/restore")
+def restore_revision(revision_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return svc.restore_revision(db, actor_from(user), revision_id)
 
 
 @router.post("/projects/{project_id}/submit-review")

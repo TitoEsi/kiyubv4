@@ -14,12 +14,12 @@ ALTER TABLE audit_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
 
 -- Authenticated JWT claims: request.jwt.claims->>'sub' and request.jwt.claims->>'role'
--- Clients and architects see only assigned projects; admin/IT see all.
+-- Clients and architects see only assigned projects; admin sees all.
 
 CREATE POLICY projects_select ON projects
     FOR SELECT
     USING (
-        current_setting('request.jwt.claims', true)::json->>'role' IN ('MAIN_ADMIN', 'IT_PERSONNEL')
+        current_setting('request.jwt.claims', true)::json->>'role' = 'ADMIN'
         OR client_id = current_setting('request.jwt.claims', true)::json->>'sub'
         OR architect_id = current_setting('request.jwt.claims', true)::json->>'sub'
     );

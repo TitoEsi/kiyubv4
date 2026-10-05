@@ -35,8 +35,19 @@ def tokens(client: TestClient) -> dict:
         "client": login(client, "client@kiyub.local", "clientpass"),
         "architect": login(client, "architect@kiyub.local", "architectpass"),
         "admin": login(client, "admin@kiyub.local", "adminpass"),
-        "it": login(client, "it@kiyub.local", "itpass"),
     }
+
+
+def pending_application(email: str, full_name: str, invited_by: str) -> str:
+    """A PENDING_APPROVAL request: legacy rows, or one whose invite email failed to send."""
+    db = wfdb.SessionLocal()
+    try:
+        row = ArchitectApplication(email=email, full_name=full_name, information="N/A", invited_by=invited_by)
+        db.add(row)
+        db.commit()
+        return row.id
+    finally:
+        db.close()
 
 
 def test_client_invite_sends_email_and_creates_no_project(client, monkeypatch):
@@ -79,7 +90,7 @@ def test_complete_account_creates_one_draft_project(client):
             **ACCEPT,
             "invitation_token": token,
             "full_name": "Complete Client",
-            "role": "MAIN_ADMIN",
+            "role": "ADMIN",
         },
     )
     assert first.status_code == 200, first.text
@@ -193,16 +204,14 @@ def test_production_missing_public_app_url_rejects_architect_approve(client, mon
         json={"email": "prod-arch@kiyub.local", "full_name": "Prod Arch", "information": "N/A"},
         headers=auth(tok["admin"]["token"]),
     )
-    assert created.status_code == 200
-    approved = client.post(
-        f"/api/architect-applications/{created.json()['id']}/approve",
-        headers=auth(tok["it"]["token"]),
-    )
-    assert approved.status_code == 503
+    assert created.status_code == 503
     assert sent == []
-    listed = client.get("/api/architect-applications", headers=auth(tok["it"]["token"])).json()
-    row = next(item for item in listed if item["id"] == created.json()["id"])
+    listed = client.get("/api/architect-applications", headers=auth(tok["admin"]["token"])).json()
+    row = next(item for item in listed if item["email"] == "prod-arch@kiyub.local")
     assert row["status"] == "PENDING_APPROVAL"
+    retried = client.post(f"/api/architect-applications/{row['id']}/approve", headers=auth(tok["admin"]["token"]))
+    assert retried.status_code == 503
+    assert sent == []
 
 
 def test_existing_client_can_be_invited(client, monkeypatch):
@@ -302,34 +311,28 @@ def test_architect_application_approval_and_login(client, monkeypatch):
     sent: list[str] = []
     monkeypatch.setattr("workflow.mail.send_auth_invite", lambda email, redirect_to, metadata=None: sent.append(email) or None)
     tok = tokens(client)
+    for role in ("architect", "client"):
+        forbidden = client.post(
+            "/api/architect-applications",
+            json={"email": "newarch@kiyub.local", "full_name": "New Architect"},
+            headers=auth(tok[role]["token"]),
+        )
+        assert forbidden.status_code == 403
     created = client.post(
         "/api/architect-applications",
         json={"email": "newarch@kiyub.local", "full_name": "New Architect", "information": "License 1"},
         headers=auth(tok["admin"]["token"]),
     )
-    assert created.status_code == 200
-    assert created.json()["status"] == "PENDING_APPROVAL"
+    assert created.status_code == 200, created.text
+    assert created.json()["status"] == "APPROVED"
+    assert created.json()["reviewed_by"] == tok["admin"]["user"]["id"]
+    assert sent == ["newarch@kiyub.local"]
     denied = client.post("/api/auth/login", json={"email": "newarch@kiyub.local", "password": "archpass"})
     assert denied.status_code == 401
-    forbidden = client.post(
-        f"/api/architect-applications/{created.json()['id']}/approve",
-        headers=auth(tok["architect"]["token"]),
-    )
-    assert forbidden.status_code == 403
-    client_forbidden = client.post(
-        f"/api/architect-applications/{created.json()['id']}/approve",
-        headers=auth(tok["client"]["token"]),
-    )
-    assert client_forbidden.status_code == 403
-    approved = client.post(
-        f"/api/architect-applications/{created.json()['id']}/approve",
-        headers=auth(tok["it"]["token"]),
-    )
-    assert approved.status_code == 200
-    assert approved.json()["status"] == "APPROVED"
-    assert sent == ["newarch@kiyub.local"]
+    audit = {e["event_type"] for e in client.get("/api/audit", headers=auth(tok["admin"]["token"])).json() if e["target"] == "newarch@kiyub.local"}
+    assert {"ARCHITECT_APPLICATION_CREATED", "ARCHITECT_APPLICATION_APPROVED"} <= audit
     done = client.post(
-        f"/api/architect-applications/by-token/{approved.json()['token']}/complete",
+        f"/api/architect-applications/by-token/{created.json()['token']}/complete",
         json={"password": "archpass", "role": "IT_PERSONNEL", **ACCEPT},
     )
     assert done.status_code == 200
@@ -345,6 +348,24 @@ def test_architect_application_approval_and_login(client, monkeypatch):
         db.close()
 
 
+def test_admin_approves_pending_architect_request(client, monkeypatch):
+    sent: list[str] = []
+    monkeypatch.setattr("workflow.mail.send_auth_invite", lambda email, redirect_to, metadata=None: sent.append(email) or None)
+    tok = tokens(client)
+    app_id = pending_application("queued@kiyub.local", "Queued Arch", tok["admin"]["user"]["id"])
+    for role in ("architect", "client"):
+        r = client.post(f"/api/architect-applications/{app_id}/approve", headers=auth(tok[role]["token"]))
+        assert r.status_code == 403
+        listed = client.get("/api/architect-applications", headers=auth(tok[role]["token"]))
+        assert listed.status_code == 403
+    approved = client.post(f"/api/architect-applications/{app_id}/approve", headers=auth(tok["admin"]["token"]))
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "APPROVED"
+    assert sent == ["queued@kiyub.local"]
+    again = client.post(f"/api/architect-applications/{app_id}/approve", headers=auth(tok["admin"]["token"]))
+    assert again.status_code == 409
+
+
 def test_architect_application_rejection(client, monkeypatch):
     notices: list[tuple] = []
 
@@ -354,27 +375,23 @@ def test_architect_application_rejection(client, monkeypatch):
 
     monkeypatch.setattr("workflow.mail.send_application_rejection", fake_send)
     tok = tokens(client)
-    created = client.post(
-        "/api/architect-applications",
-        json={"email": "rejectme@kiyub.local", "full_name": "Reject Me", "information": "N/A"},
-        headers=auth(tok["admin"]["token"]),
-    )
+    app_id = pending_application("rejectme@kiyub.local", "Reject Me", tok["admin"]["user"]["id"])
     client_forbidden = client.post(
-        f"/api/architect-applications/{created.json()['id']}/reject",
+        f"/api/architect-applications/{app_id}/reject",
         json={"reason": "no"},
         headers=auth(tok["client"]["token"]),
     )
     assert client_forbidden.status_code == 403
     architect_forbidden = client.post(
-        f"/api/architect-applications/{created.json()['id']}/reject",
+        f"/api/architect-applications/{app_id}/reject",
         json={"reason": "no"},
         headers=auth(tok["architect"]["token"]),
     )
     assert architect_forbidden.status_code == 403
     rejected = client.post(
-        f"/api/architect-applications/{created.json()['id']}/reject",
+        f"/api/architect-applications/{app_id}/reject",
         json={"reason": "Incomplete credentials"},
-        headers=auth(tok["it"]["token"]),
+        headers=auth(tok["admin"]["token"]),
     )
     assert rejected.status_code == 200
     assert rejected.json()["status"] == "REJECTED"
@@ -385,7 +402,7 @@ def test_architect_application_rejection(client, monkeypatch):
     db = wfdb.SessionLocal()
     try:
         assert db.query(User).filter(User.email == "rejectme@kiyub.local").one_or_none() is None
-        row = db.get(ArchitectApplication, created.json()["id"])
+        row = db.get(ArchitectApplication, app_id)
         assert row.status == "REJECTED"
         row.token_hash = _hash_invite_token(leaked)
         db.touch(row)
@@ -402,15 +419,11 @@ def test_architect_application_rejection(client, monkeypatch):
 def test_architect_rejection_persists_when_email_fails(client, monkeypatch):
     monkeypatch.setattr("workflow.mail.send_application_rejection", lambda *a, **k: False)
     tok = tokens(client)
-    created = client.post(
-        "/api/architect-applications",
-        json={"email": "noreply@kiyub.local", "full_name": "No Mail", "information": "N/A"},
-        headers=auth(tok["admin"]["token"]),
-    )
+    app_id = pending_application("noreply@kiyub.local", "No Mail", tok["admin"]["user"]["id"])
     rejected = client.post(
-        f"/api/architect-applications/{created.json()['id']}/reject",
+        f"/api/architect-applications/{app_id}/reject",
         json={"reason": "Missing documents"},
-        headers=auth(tok["it"]["token"]),
+        headers=auth(tok["admin"]["token"]),
     )
     assert rejected.status_code == 200
     assert rejected.json()["status"] == "REJECTED"

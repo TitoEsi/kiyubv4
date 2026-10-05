@@ -17,8 +17,7 @@ from .scene import floor_plan_to_scene_document
 SEED_USERS = (
     ("client@kiyub.local", "clientpass", "CLIENT", True),
     ("architect@kiyub.local", "architectpass", "ARCHITECT", True),
-    ("admin@kiyub.local", "adminpass", "MAIN_ADMIN", True),
-    ("it@kiyub.local", "itpass", "IT_PERSONNEL", True),
+    ("admin@kiyub.local", "adminpass", "ADMIN", True),
 )
 
 SEED_CLIENT_EMAIL = "client@kiyub.local"

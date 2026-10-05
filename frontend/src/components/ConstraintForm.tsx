@@ -20,7 +20,7 @@ import {
   QuestionnaireData,
 } from '../types/questionnaire'
 import { validateQuestionnaire } from '../converters/validate-questionnaire'
-import { ARCHITECTURAL_STYLES } from '../data/architecturalStyles'
+import { ARCHITECTURAL_STYLES, RETIRED_STYLES } from '../data/architecturalStyles'
 import { useUnits } from '../units/UnitsProvider'
 import { areaSymbol, fromSquareMeters, MeasurementUnit, toSquareMeters } from '../units/measurement'
 import { AreaInput, MeasurementInput } from './MeasurementInput'
@@ -363,7 +363,12 @@ export default function ConstraintForm({ value, onChange, onGenerate, loading, h
         <div className="catalog-row catalog-row-full">
           <span className="catalog-row-label">Architectural Style</span>
         </div>
-        <div className="catalog-style-grid">
+        {RETIRED_STYLES[q.preferences.style] && (
+          <p className="catalog-style-retired" role="note">
+            Saved style: {RETIRED_STYLES[q.preferences.style]}, no longer offered. Choose a style to generate.
+          </p>
+        )}
+        <div className="catalog-style-grid" id="field-style">
           {ARCHITECTURAL_STYLES.map(s => (
             <button
               type="button"

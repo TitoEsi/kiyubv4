@@ -114,6 +114,7 @@ STYLE_ENCODER_MAP = {
     "brutalist": "contemporary",
 }
 
+# Frozen checkpoint slots. craftsman, farmhouse and ranch are encoder-only and not offered in the UI.
 _ENCODER_STYLES = (
     "modern", "traditional", "craftsman", "ranch",
     "farmhouse", "contemporary", "colonial", "cape_cod",

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import WorkflowShell from './WorkflowShell'
 import { AuditEvent, listAudit, listProjects, Project } from '../workflow/api'
+import { actorRoleLabel } from '../workflow/commentThreads'
 
 function stamp(iso: string | null) {
   if (!iso) return '—'
@@ -63,7 +64,10 @@ export default function HistoryPage() {
                 {rows.map(e => (
                   <tr key={e.id}>
                     <td>{actionLabel(e.event_type)}</td>
-                    <td>{e.actor_email || e.target || '—'}</td>
+                    <td>
+                      {e.actor_email || e.target || '—'}
+                      {e.actor_role && <span className="wf-hint"> · {actorRoleLabel(e.actor_role, e.actor_deleted)}</span>}
+                    </td>
                     <td>{stamp(e.created_at)}</td>
                     {showProject && <td>{e.project_id ? (names[e.project_id] || e.project_id) : '—'}</td>}
                   </tr>

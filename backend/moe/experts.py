@@ -79,9 +79,7 @@ class StyleAdaptationExpert(BaseExpert):
     Adapts layout patterns per style:
     - Modern: open-plan great room, minimal walls, large windows
     - Traditional: formal entry, separate living + dining
-    - Craftsman: covered porch, breakfast nook, built-ins
     - Ranch: single story, elongated footprint, split bedrooms
-    - Farmhouse: mudroom, large kitchen island, wraparound porch
     """
 
     def __init__(self, config: MOEConfig):

@@ -24,6 +24,7 @@ from workflow.models import (
     Comment,
     DesignDocument,
     GenerationJob,
+    HistoricalActor,
     Inquiry,
     Invitation,
     Notification,
@@ -32,6 +33,9 @@ from workflow.models import (
     User,
 )
 from workflow.services import _sync_site_constraints
+
+LEGACY_ROLE_MAP = {"MAIN_ADMIN": "ADMIN"}
+RETIRED_ROLES = {"IT_PERSONNEL"}
 
 TABLE_MODELS = (
     ("projects", Project),
@@ -80,6 +84,7 @@ def import_sqlite(db_path: Path, default_password: str, skip_existing_auth: bool
     db = SessionLocal()
     try:
         user_map: dict[str, str] = {}
+        historical_ids: set[str] = set()
         try:
             users = conn.execute("select * from users").fetchall()
         except sqlite3.Error:
@@ -88,8 +93,17 @@ def import_sqlite(db_path: Path, default_password: str, skip_existing_auth: bool
             row = dict(raw)
             email = (row.get("email") or "").lower().strip()
             old_id = str(row.get("id"))
-            role = row.get("role") or "CLIENT"
+            role = LEGACY_ROLE_MAP.get(row.get("role") or "CLIENT", row.get("role") or "CLIENT")
             approved = bool(row.get("approved", True))
+            if role in RETIRED_ROLES:
+                # Retired roles are not recreated as accounts; keep only the identity for audit history.
+                hist_id = old_id if _is_uuid(old_id) else str(uuid.uuid4())
+                if db.get(HistoricalActor, hist_id) is None:
+                    db.add(HistoricalActor(id=hist_id, email=email, full_name=row.get("full_name"), role=role))
+                user_map[old_id] = hist_id
+                historical_ids.add(hist_id)
+                report["users"].append({"email": email, "old_id": old_id, "new_id": hist_id, "auth": "historical"})
+                continue
             existing = admin_user_id_by_email(email)
             if existing:
                 user_map[old_id] = existing
@@ -152,6 +166,8 @@ def import_sqlite(db_path: Path, default_password: str, skip_existing_auth: bool
                     data["requested_by"] = remap(data.get("requested_by"))
                 if "user_id" in data:
                     data["user_id"] = remap(data.get("user_id"))
+                    if data["user_id"] in historical_ids:
+                        continue
                 if "accepted_user_id" in data:
                     data["accepted_user_id"] = remap(data.get("accepted_user_id"))
                 data.pop("password_hash", None)

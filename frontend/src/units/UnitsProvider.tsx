@@ -47,6 +47,12 @@ export function UnitsProvider({ children }: { children: ReactNode }) {
 
 const FALLBACK: UnitsState = { unit: DEFAULT_UNIT, setUnit: () => {} }
 
+/** Display unit for a render that is not the signed-in session, such as PDF export. */
+export function UnitsScope({ unit, children }: { unit: MeasurementUnit; children: ReactNode }) {
+  const value = useMemo(() => ({ unit, setUnit: () => {} }), [unit])
+  return <UnitsContext.Provider value={value}>{children}</UnitsContext.Provider>
+}
+
 export function useUnits(): UnitsState {
   return useContext(UnitsContext) ?? FALLBACK
 }

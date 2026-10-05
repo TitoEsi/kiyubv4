@@ -1,4 +1,4 @@
-"""Studio generation endpoints are limited to Main Admin and IT server-side."""
+"""Studio generation endpoints are limited to Admin server-side."""
 from __future__ import annotations
 
 import os
@@ -67,21 +67,20 @@ def test_architect_is_denied_and_nothing_runs():
     tok = ids(client)
     r = client.post(
         "/api/_studio_probe",
-        headers={**auth(tok["architect"]["token"]), "X-Role": "MAIN_ADMIN"},
-        json={"role": "MAIN_ADMIN"},
+        headers={**auth(tok["architect"]["token"]), "X-Role": "ADMIN"},
+        json={"role": "ADMIN"},
     )
     assert r.status_code == 403
     assert r.json()["detail"] == ARCHITECT_DENIED
     assert calls["n"] == 0
 
 
-def test_authorized_roles_still_work():
+def test_admin_can_use_studio():
     client, calls = _client_and_counter()
     tok = ids(client)
-    for role in ("admin", "it"):
-        r = client.post("/api/_studio_probe", headers=auth(tok[role]["token"]))
-        assert r.status_code == 200, (role, r.text)
-    assert calls["n"] == 2
+    r = client.post("/api/_studio_probe", headers=auth(tok["admin"]["token"]))
+    assert r.status_code == 200, r.text
+    assert calls["n"] == 1
 
 
 def test_architect_can_still_generate_on_own_project():
@@ -110,5 +109,5 @@ def test_main_studio_routes_use_studio_dependency():
         assert "Depends(require_studio_user)" in m.group(1), name
 
 
-def test_studio_api_roles_are_admin_and_it_only():
-    assert STUDIO_API_ROLES == {"MAIN_ADMIN", "IT_PERSONNEL"}
+def test_studio_api_roles_are_admin_only():
+    assert STUDIO_API_ROLES == {"ADMIN"}

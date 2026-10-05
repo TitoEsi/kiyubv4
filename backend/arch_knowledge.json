@@ -81,19 +81,9 @@
       "text": "Traditional US residential style: formal entry foyer with coat closet. Separate formal living room and formal dining room at front. Family room open to kitchen at rear. Primary suite master bedroom at rear of house. Bedrooms clustered in hall. Laundry on main floor near garage or kitchen. Gable roof 8:12 to 12:12 pitch. Attached 2-car side-entry garage. 9ft ceilings main floor, 8ft upper floor."
     },
     {
-      "id": "craftsman_style",
-      "category": "style",
-      "text": "Craftsman bungalow US style: covered front porch 6-8ft deep, full house width. Open living-dining plan. Kitchen with breakfast nook. Mudroom entry from garage. Primary bedroom with large closet. Built-in storage throughout. Low-pitched roof 4:12 to 6:12 with wide overhangs. Natural materials: stone veneer base, fiber cement siding. 9ft ceilings with boxed beams in living area."
-    },
-    {
       "id": "ranch_style",
       "category": "style",
       "text": "Ranch home US style: single story, elongated rectangular or L-shape footprint. Attached 2-car garage at front or side. Open living-dining-kitchen layout. Primary bedroom at one end, secondary bedrooms at other end for privacy. Sliding glass doors to rear patio. Low roof pitch 3:12 to 5:12. Wide lot frontage typical (60-80ft). All rooms accessible without stairs."
-    },
-    {
-      "id": "farmhouse_style",
-      "category": "style",
-      "text": "Modern farmhouse US style: large covered wraparound or front porch. Mudroom/laundry entry essential from garage. Large open kitchen with farmhouse sink and island. Shiplap accent walls. Primary suite with freestanding tub, walk-in shower, dual vanity. Bonus room or loft over garage. Mixed metal fixtures (black and brushed brass). Board-and-batten exterior siding. 9-10ft ceilings."
     },
     {
       "id": "primary_suite",

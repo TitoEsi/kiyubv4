@@ -1,5 +1,6 @@
 import { ValidationIssue } from '../types/floorplan'
 import { QuestionnaireData } from '../types/questionnaire'
+import { RETIRED_STYLES } from '../data/architecturalStyles'
 import { formatArea, formatMeasurement, MeasurementUnit, toSquareMeters } from '../units/measurement'
 
 /** Program area rules mirror the feet-native generation engine; thresholds are its ft² values. */
@@ -58,6 +59,16 @@ export function validateQuestionnaire(data: QuestionnaireData, unit: Measurement
       severity: 'error',
       message: `${label.charAt(0).toUpperCase() + label.slice(1)} lots are not yet supported.`,
       detail: 'True L-shaped and irregular lot geometry is not implemented. Choose Rectangle or Square for this phase.',
+    })
+  }
+
+  const retiredStyle = RETIRED_STYLES[data.preferences.style]
+  if (retiredStyle) {
+    issues.push({
+      field: 'style',
+      severity: 'error',
+      message: `${retiredStyle} is no longer offered.`,
+      detail: 'Choose an architectural style before generating.',
     })
   }
 

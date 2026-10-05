@@ -48,6 +48,12 @@ class CommentBody(BaseModel):
     stage: str | None = None
     x: float | None = None
     y: float | None = None
+    parent_id: str | None = None
+
+
+class CommentResolveBody(BaseModel):
+    resolved: bool = True
+    note: str | None = None
 
 
 class CommentPatch(BaseModel):
@@ -55,12 +61,6 @@ class CommentPatch(BaseModel):
     object_id: str | None = None
     x: float | None = None
     y: float | None = None
-
-
-class DesignBody(BaseModel):
-    floor_plan: dict[str, Any]
-    expected_revision_id: str | None = None
-    scene_document: dict[str, Any] | None = None
 
 
 class WorkingDesignBody(BaseModel):

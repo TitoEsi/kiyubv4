@@ -1,6 +1,8 @@
 import type { FloorPlan } from '../../types/floorplan'
 import type { SceneDocument } from '../types'
-import { floorPlanToSceneDocument, type LotMeters } from '../adapters/floorplan-to-scene-document'
+import { floorPlanToSceneDocument, isCornerAnchoredPlan, planOpeningCentre, type LotMeters } from '../adapters/floorplan-to-scene-document'
+import { normalizeDoorSwings } from './door-geometry'
+import { dist, projectT } from './geometry'
 import { normalizeFloorPlan } from '../../units/legacy'
 import { assignJunctions, bootstrapWallsFromRooms } from './bootstrap-walls'
 import { syncOpeningsToWalls } from './opening-ops'
@@ -15,6 +17,31 @@ export function defaultLotFromPlan(input: FloorPlan, lot?: Partial<LotMeters>): 
   const w = lot?.lotWidth && lot.lotWidth > 0 ? lot.lotWidth : Math.max(plan.totalWidth || FALLBACK_LOT_WIDTH_M, MIN_LOT_M)
   const d = lot?.lotDepth && lot.lotDepth > 0 ? lot.lotDepth : Math.max(plan.totalHeight || FALLBACK_LOT_DEPTH_M, MIN_LOT_M)
   return { lotWidth: w, lotDepth: d, stories: lot?.stories || 1 }
+}
+
+const UNTOUCHED_EPS_M = 0.01
+
+/**
+ * Scenes saved before openings were centred kept OR-tools start corners as centres. An opening that
+ * still sits on its source corner was never moved, so it is re-centred on its true span.
+ */
+function recentreUntouchedEngineOpenings(scene: SceneDocument, input: FloorPlan): SceneDocument {
+  const plan = normalizeFloorPlan(input)
+  if (!plan || !isCornerAnchoredPlan(plan) || !plan.openings?.length) return scene
+  const source = new Map(plan.openings.map(o => [o.id, o]))
+  const walls = new Map(scene.walls.map(w => [w.id, w]))
+  let changed = false
+  const openings = scene.openings.map(o => {
+    const src = source.get(o.id)
+    const wall = walls.get(o.wallId)
+    if (!src || !wall || o.metadata?.swingSide != null) return o
+    if (dist(o.position, { x: src.x, y: src.y }) > UNTOUCHED_EPS_M) return o
+    const centre = planOpeningCentre(src, true)
+    if (dist(centre, o.position) <= UNTOUCHED_EPS_M) return o
+    changed = true
+    return { ...o, position: centre, metadata: { ...(o.metadata || {}), t: projectT(wall, centre) } }
+  })
+  return changed ? { ...scene, openings } : scene
 }
 
 export function isSceneDocument(value: unknown): value is SceneDocument {
@@ -32,7 +59,8 @@ export function loadLiveScene(
     let scene = options.existing
     if (!scene.furniture) scene = { ...scene, furniture: [] }
     if (!scene.walls.length) scene = bootstrapWallsFromRooms(scene)
-    return syncOpeningsToWalls(assignJunctions(scene))
+    scene = recentreUntouchedEngineOpenings(scene, plan)
+    return normalizeDoorSwings(syncOpeningsToWalls(assignJunctions(scene)))
   }
   const safeLot = defaultLotFromPlan(plan, lot)
   let scene = floorPlanToSceneDocument(plan, safeLot, { projectId: options.projectId })

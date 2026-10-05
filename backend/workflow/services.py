@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 from fastapi import HTTPException, status
 
+from architectural_styles import RETIRED_STYLES, retired_style_message
 from generation_units import (
     METRIC,
     normalize_comment_coords,
@@ -22,8 +23,9 @@ from generation_units import (
 )
 
 from . import permissions as perm
-from .audit import log_event, notify, notify_it, notify_project_roles
+from .audit import log_event, notify, notify_admins, notify_project_roles
 from .generate import brief_to_constraints, run_generation
+from .scene_diff import summarize_changes
 from .models import (
     AICandidate,
     Approval,
@@ -33,6 +35,7 @@ from .models import (
     Comment,
     DesignDocument,
     GenerationJob,
+    HistoricalActor,
     Inquiry,
     Invitation,
     Notification,
@@ -45,7 +48,7 @@ from . import mail
 from .repositories.base import MemoryStore as Session
 from .permissions import Actor
 from .scene import floor_plan_to_scene_document
-from .state import IllegalTransition, apply_transition
+from .state import ROLES, IllegalTransition, apply_transition
 
 INVITE_TTL_DAYS = 7
 CANVAS_LOCKED_DETAIL = "Waiting for the client to generate a floor plan"
@@ -273,12 +276,12 @@ def list_projects(db: Session, actor: Actor) -> list[Project]:
 
 def assign_project(db: Session, actor: Actor, project_id: str, client_id: str | None, architect_id: str | None) -> Project:
     project = _require_view(db, actor, project_id)
-    if actor.role not in ("MAIN_ADMIN", "IT_PERSONNEL"):
+    if not perm.can_assign_projects(actor):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot assign this project")
     if client_id is not None:
         project.client_id = client_id
         notify(db, client_id, "PROJECT_ASSIGNED", f"You were assigned to project {project.name}", project.id)
-    if architect_id is not None and actor.role in ("MAIN_ADMIN", "IT_PERSONNEL"):
+    if architect_id is not None:
         project.architect_id = architect_id
     project.updated_at = _now()
     log_event(db, event_type="ACCOUNT_MODIFIED", actor_id=actor.id, project_id=project.id, target="assignment")
@@ -333,6 +336,8 @@ def generate_candidates(db: Session, actor: Actor, project_id: str) -> dict:
     questionnaire = _loads(brief.questionnaire)
     specification = _loads(brief.specification)
     constraints = brief_to_constraints(questionnaire, specification)
+    if constraints["style"] in RETIRED_STYLES:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, retired_style_message(constraints["style"]))
     job = GenerationJob(
         project_id=project.id,
         requested_by=actor.id,
@@ -450,98 +455,6 @@ def select_candidate(db: Session, actor: Actor, project_id: str, candidate_id: s
     return cand
 
 
-def accept_candidate(db: Session, actor: Actor, project_id: str, candidate_id: str) -> Revision:
-    project = _require_view(db, actor, project_id)
-    _require_architect_canvas(db, actor, project)
-    if not perm.can_accept_candidate(actor, project_as_dict(project, db)):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the assigned architect can accept a candidate")
-    cand = db.get(AICandidate, candidate_id)
-    if cand is None or cand.project_id != project.id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Candidate not found")
-    source = db.get(Revision, cand.revision_id)
-    if source is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Candidate revision missing")
-    doc = _document(db, project)
-    copy = _add_revision(
-        db,
-        doc=doc,
-        floor_plan=_loads(source.floor_plan),
-        created_by=actor.id,
-        source_type="ARCHITECT_EDIT",
-        source_revision_id=source.id,
-    )
-    doc.current_revision_id = copy.id
-    doc.stage = "ARCHITECT_DESIGN"
-    if project.status == "DRAFT":
-        _set_status(db, project, "IN_PROGRESS", actor.id)
-    log_event(
-        db,
-        event_type="REVISION_CREATED",
-        actor_id=actor.id,
-        project_id=project.id,
-        revision_id=copy.id,
-        metadata={"from_candidate": cand.id, "copied_from": source.id},
-    )
-    notify(db, project.client_id, "REVISION_CREATED", f"Architect started a design from an AI candidate on {project.name}", project.id)
-    scene = _loads(source.scene_document)
-    if _is_scene_document(scene):
-        doc.working_scene_document = json.dumps(scene)
-        doc.working_updated_at = _now()
-    db.commit()
-    db.refresh(copy)
-    return copy
-
-
-def update_design(
-    db: Session,
-    actor: Actor,
-    revision_id: str,
-    floor_plan: dict,
-    expected_revision_id: str | None,
-    scene_document: dict | None = None,
-) -> Revision:
-    rev = db.get(Revision, revision_id)
-    if rev is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Revision not found")
-    doc = db.get(DesignDocument, rev.design_document_id)
-    project = db.get(Project, doc.project_id) if doc else None
-    if project is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Project not found")
-    if rev.source_type == "PUBLISHED" or project.status == "PUBLISHED":
-        raise HTTPException(status.HTTP_409_CONFLICT, "Published designs cannot be mutated")
-    if not perm.can_edit_design(actor, project_as_dict(project, db)):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot edit design")
-    _require_architect_canvas(db, actor, project)
-    if expected_revision_id and doc.current_revision_id and expected_revision_id != doc.current_revision_id:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Stale revision; reload before saving")
-    if rev.source_type == "AI_GENERATED":
-        raise HTTPException(status.HTTP_409_CONFLICT, "Accept the candidate before editing; AI revisions are immutable")
-    new_rev = _add_revision(
-        db,
-        doc=doc,
-        floor_plan=floor_plan,
-        created_by=actor.id,
-        source_type="REVISION",
-        source_revision_id=rev.id,
-        scene_document=scene_document,
-    )
-    if scene_document is not None:
-        doc.working_scene_document = json.dumps(scene_document)
-        doc.working_updated_at = datetime.now(timezone.utc)
-    doc.current_revision_id = new_rev.id
-    log_event(
-        db,
-        event_type="REVISION_CREATED",
-        actor_id=actor.id,
-        project_id=project.id,
-        revision_id=new_rev.id,
-        metadata={"kind": "WALL/ROOM"},
-    )
-    db.commit()
-    db.refresh(new_rev)
-    return new_rev
-
-
 def update_working_design(db: Session, actor: Actor, project_id: str, scene_document: dict) -> dict:
     project = _require_view(db, actor, project_id)
     payload = project_as_dict(project, db)
@@ -551,8 +464,7 @@ def update_working_design(db: Session, actor: Actor, project_id: str, scene_docu
     if project.status == "PUBLISHED":
         raise HTTPException(status.HTTP_409_CONFLICT, "Published designs cannot be mutated")
     doc = _document(db, project)
-    doc.working_scene_document = json.dumps(scene_document)
-    doc.working_updated_at = datetime.now(timezone.utc)
+    _write_working_scene(doc, scene_document)
     db.commit()
     db.refresh(doc)
     return {
@@ -563,8 +475,14 @@ def update_working_design(db: Session, actor: Actor, project_id: str, scene_docu
 def list_revisions(db: Session, actor: Actor, project_id: str) -> list[dict]:
     project = _require_view(db, actor, project_id)
     doc = _document(db, project)
-    rows = db.query(Revision).filter(Revision.design_document_id == doc.id).order_by(Revision.version.desc()).all()
+    rows = _revisions_desc(db, doc)
+    if not perm.can_view_drafts(actor, project_as_dict(project, db)):
+        rows = [r for r in rows if _client_may_view(r)]
     return [serialize_revision(r, current_id=doc.current_revision_id) for r in rows]
+
+
+def _client_may_view(rev: Revision) -> bool:
+    return _is_submitted(rev) or rev.source_type in ("PUBLISHED", "AI_GENERATED")
 
 
 def get_revision(db: Session, actor: Actor, revision_id: str) -> dict:
@@ -575,6 +493,8 @@ def get_revision(db: Session, actor: Actor, revision_id: str) -> dict:
     project = db.get(Project, doc.project_id)
     _require_view(db, actor, project.id)
     _require_architect_canvas(db, actor, project)
+    if not perm.can_view_drafts(actor, project_as_dict(project, db)) and not _client_may_view(rev):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Revision not found")
     return serialize_revision(rev, current_id=doc.current_revision_id, include_payload=True)
 
 
@@ -588,45 +508,138 @@ def add_comment(
     stage: str | None,
     x: float | None = None,
     y: float | None = None,
+    parent_id: str | None = None,
 ) -> Comment:
     project = _require_view(db, actor, project_id)
     if not perm.can_comment(actor, project_as_dict(project)):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot comment")
+    if not body or not body.strip():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Comment text is required")
     doc = _document(db, project)
+    parent = None
+    if parent_id:
+        parent = db.get(Comment, parent_id)
+        if parent is None or parent.project_id != project.id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Comment not found")
+        if parent.parent_id:
+            parent = db.get(Comment, parent.parent_id) or parent
+    target_revision_id = revision_id or doc.current_revision_id
+    if not perm.can_edit_design(actor, project_as_dict(project, db)):
+        target = db.get(Revision, target_revision_id) if target_revision_id else None
+        if target is None or not _client_may_view(target):
+            latest = _latest_review_revision(db, doc)
+            target_revision_id = latest.id if latest else None
     comment = Comment(
         project_id=project.id,
         stage=stage or doc.stage,
-        revision_id=revision_id or doc.current_revision_id,
+        revision_id=target_revision_id,
         author_id=actor.id,
-        object_id=object_id,
+        object_id=None if parent else object_id,
         body=body,
-        x=x,
-        y=y,
+        x=None if parent else x,
+        y=None if parent else y,
         coord_units=METRIC,
+        parent_id=parent.id if parent else None,
     )
     db.add(comment)
-    log_event(db, event_type="COMMENT_CREATED", actor_id=actor.id, project_id=project.id, revision_id=comment.revision_id)
-    notify_project_roles(db, project, "COMMENT_CREATED", f"New comment on {project.name}", actor.id)
+    if parent:
+        log_event(
+            db,
+            event_type="COMMENT_REPLIED",
+            actor_id=actor.id,
+            project_id=project.id,
+            revision_id=comment.revision_id,
+            target=comment.id,
+            metadata={"body": body, "parent_id": parent.id, "parent_body": parent.body},
+        )
+        notify_project_roles(db, project, "COMMENT_REPLIED", f"New reply on {project.name}: \"{_excerpt(body)}\"", actor.id)
+    else:
+        log_event(
+            db,
+            event_type="COMMENT_CREATED",
+            actor_id=actor.id,
+            project_id=project.id,
+            revision_id=comment.revision_id,
+            target=comment.id,
+            metadata={"body": body},
+        )
+        notify_project_roles(db, project, "COMMENT_CREATED", f"New comment on {project.name}: \"{_excerpt(body)}\"", actor.id)
     db.commit()
     db.refresh(comment)
     return comment
 
 
+def _excerpt(text: str | None, limit: int = 60) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def list_comments(db: Session, actor: Actor, project_id: str) -> list[dict]:
     project = _require_view(db, actor, project_id)
     rows = db.query(Comment).filter(Comment.project_id == project.id).order_by(Comment.created_at.asc()).all()
-    return [serialize_comment(c, db) for c in rows]
+    ctx = _comment_context(db, project.id, rows)
+    return [serialize_comment(c, db, ctx) for c in rows]
+
+
+def _comment_context(db: Session, project_id: str, comments: list[Comment]) -> dict:
+    """Edit history (from immutable activity), version numbers and user lookups, loaded once."""
+    edits = (
+        db.query(AuditEvent)
+        .filter(AuditEvent.project_id == project_id, AuditEvent.event_type == "COMMENT_EDITED")
+        .order_by(AuditEvent.created_at.asc())
+        .all()
+    )
+    history: dict[str, list[dict]] = {}
+    user_ids = {c.author_id for c in comments} | {c.resolved_by for c in comments if c.resolved_by}
+    user_ids |= {e.actor_id for e in edits if e.actor_id}
+    for e in edits:
+        meta = _loads(e.metadata_json) or {}
+        history.setdefault(e.target or "", []).append({
+            "previous": meta.get("previous"),
+            "body": meta.get("body"),
+            "edited_by": e.actor_id,
+            "edited_at": e.created_at.isoformat() if e.created_at else None,
+        })
+    users = {u.id: u for u in db.query(User).filter(User.id.in_(list(user_ids) or ["__none__"])).all()}
+    for items in history.values():
+        for item in items:
+            u = users.get(item["edited_by"])
+            item["edited_by_email"] = u.email if u else None
+            item["edited_by_role"] = u.role if u else None
+    rev_ids = {c.revision_id for c in comments if c.revision_id} | {c.resolution_revision_id for c in comments if c.resolution_revision_id}
+    versions = {r.id: r.version for r in db.query(Revision).filter(Revision.id.in_(list(rev_ids) or ["__none__"])).all()}
+    return {"history": history, "users": users, "versions": versions}
+
+
+def _get_comment(db: Session, project: Project, comment_id: str) -> Comment:
+    comment = db.get(Comment, comment_id)
+    if comment is None or comment.project_id != project.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Comment not found")
+    return comment
 
 
 def update_comment(db: Session, actor: Actor, project_id: str, comment_id: str, patch: dict) -> Comment:
     project = _require_view(db, actor, project_id)
-    comment = db.get(Comment, comment_id)
-    if comment is None or comment.project_id != project.id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Comment not found")
+    comment = _get_comment(db, project, comment_id)
     if not perm.can_mutate_comment(actor, project_as_dict(project), comment.author_id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot edit comment")
-    if "body" in patch and patch["body"] is not None:
-        comment.body = patch["body"]
+    new_body = patch.get("body")
+    if new_body is not None and new_body != comment.body:
+        if not new_body.strip():
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Comment text is required")
+        previous = comment.body
+        comment.body = new_body
+        comment.updated_at = _now()
+        log_event(
+            db,
+            event_type="COMMENT_EDITED",
+            actor_id=actor.id,
+            project_id=project.id,
+            revision_id=comment.revision_id,
+            target=comment.id,
+            metadata={"previous": previous, "body": new_body, "parent_id": comment.parent_id},
+        )
+        notify_project_roles(db, project, "COMMENT_EDITED", f"A comment was edited on {project.name}: \"{_excerpt(new_body)}\"", actor.id)
     if "object_id" in patch:
         comment.object_id = patch["object_id"]
     if "x" in patch or "y" in patch:
@@ -642,15 +655,50 @@ def update_comment(db: Session, actor: Actor, project_id: str, comment_id: str, 
     return comment
 
 
-def delete_comment(db: Session, actor: Actor, project_id: str, comment_id: str) -> None:
+def resolve_comment(
+    db: Session, actor: Actor, project_id: str, comment_id: str, resolved: bool, note: str | None = None,
+) -> Comment:
     project = _require_view(db, actor, project_id)
-    comment = db.get(Comment, comment_id)
-    if comment is None or comment.project_id != project.id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Comment not found")
-    if not perm.can_mutate_comment(actor, project_as_dict(project), comment.author_id):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot delete comment")
-    db.delete(comment)
+    if not perm.can_resolve_comment(actor, project_as_dict(project)):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the assigned architect can resolve comments")
+    comment = _get_comment(db, project, comment_id)
+    if comment.parent_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Replies are resolved with their thread")
+    note = (note or "").strip() or None
+    if resolved and comment.resolved_at is None:
+        comment.resolved_at = _now()
+        comment.resolved_by = actor.id
+        comment.resolution_note = note
+        comment.resolution_revision_id = None
+        log_event(
+            db,
+            event_type="COMMENT_RESOLVED",
+            actor_id=actor.id,
+            project_id=project.id,
+            revision_id=comment.revision_id,
+            target=comment.id,
+            metadata={"body": comment.body, "note": note},
+        )
+        notify_project_roles(db, project, "COMMENT_RESOLVED", f"Comment resolved on {project.name}: \"{_excerpt(comment.body)}\"", actor.id)
+    elif not resolved and comment.resolved_at is not None:
+        comment.resolved_at = None
+        comment.resolved_by = None
+        comment.resolution_note = None
+        comment.resolution_revision_id = None
+        log_event(
+            db,
+            event_type="COMMENT_REOPENED",
+            actor_id=actor.id,
+            project_id=project.id,
+            revision_id=comment.revision_id,
+            target=comment.id,
+            metadata={"body": comment.body},
+        )
+        notify_project_roles(db, project, "COMMENT_REOPENED", f"Comment reopened on {project.name}: \"{_excerpt(comment.body)}\"", actor.id)
+    db.touch(comment)
     db.commit()
+    db.refresh(comment)
+    return comment
 
 
 def _is_scene_document(value: Any) -> bool:
@@ -664,13 +712,51 @@ def _is_scene_document(value: Any) -> bool:
     )
 
 
-def _latest_review_revision(db: Session, doc: DesignDocument) -> Revision | None:
+_VOLATILE_SCENE_METADATA = ("createdAt", "updatedAt")
+
+
+def _write_working_scene(doc: DesignDocument, scene_document: dict) -> None:
+    doc.working_scene_document = json.dumps(scene_document)
+    doc.working_updated_at = datetime.now(timezone.utc)
+    if doc.stage in ("CLIENT_BRIEF", "AI_PROPOSAL"):
+        doc.stage = "ARCHITECT_DESIGN"
+
+
+def _scene_fingerprint(scene: Any) -> str | None:
+    """Canonical design content; edit timestamps alone are not a design change."""
+    if not isinstance(scene, dict):
+        return None
+    canonical = json.loads(json.dumps(normalize_scene_document(scene)))
+    meta = canonical.get("metadata")
+    if isinstance(meta, dict):
+        for key in _VOLATILE_SCENE_METADATA:
+            meta.pop(key, None)
+    return json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+
+
+def _revisions_desc(db: Session, doc: DesignDocument) -> list[Revision]:
     return (
         db.query(Revision)
-        .filter(Revision.design_document_id == doc.id, Revision.source_type == "REVIEW")
+        .filter(Revision.design_document_id == doc.id)
         .order_by(Revision.version.desc())
-        .first()
+        .all()
     )
+
+
+def _is_submitted(rev: Revision) -> bool:
+    return rev.submitted_at is not None or rev.source_type == "REVIEW"
+
+
+def _latest_review_revision(db: Session, doc: DesignDocument) -> Revision | None:
+    return next((r for r in _revisions_desc(db, doc) if _is_submitted(r)), None)
+
+
+def _review_baseline(db: Session, doc: DesignDocument) -> Revision | None:
+    """Latest submitted version, or a newer restored draft that has not been sent yet."""
+    for r in _revisions_desc(db, doc):
+        if _is_submitted(r) or r.source_type == "RESTORED":
+            return r
+    return None
 
 
 def _require_latest_review(db: Session, doc: DesignDocument) -> Revision:
@@ -683,15 +769,7 @@ def _require_latest_review(db: Session, doc: DesignDocument) -> Revision:
 def _active_review_revision(db: Session, doc: DesignDocument, project: Project) -> Revision | None:
     if project.status not in ("FOR_CHECKING", "APPROVED"):
         return None
-    submitted = _latest_review_revision(db, doc)
-    if submitted is None:
-        return None
-    if project.status == "APPROVED":
-        return submitted
-    current = db.get(Revision, doc.current_revision_id) if doc.current_revision_id else None
-    if current and current.version > submitted.version:
-        return None
-    return submitted
+    return _latest_review_revision(db, doc)
 
 
 def submit_review(
@@ -710,34 +788,54 @@ def submit_review(
     if not perm.can_submit_review(actor, payload):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot submit this project for checking")
     review_rev: Revision | None = None
+    created = False
+    newly_submitted = False
     if actor.role == "ARCHITECT":
         doc = _document(db, project)
-        scene = scene_document
-        if not _is_scene_document(scene) and doc.working_scene_document:
+        if _is_scene_document(scene_document):
+            _write_working_scene(doc, scene_document)
+        scene = None
+        if doc.working_scene_document:
             try:
                 scene = json.loads(doc.working_scene_document)
             except json.JSONDecodeError:
                 scene = None
         if not _is_scene_document(scene):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "A current SceneDocument is required to submit for review")
-        plan = floor_plan if isinstance(floor_plan, dict) else None
-        if plan is None and doc.current_revision_id:
-            current = db.get(Revision, doc.current_revision_id)
-            plan = _loads(current.floor_plan) if current else {}
-        review_rev = _add_revision(
-            db,
-            doc=doc,
-            floor_plan=plan or {},
-            created_by=actor.id,
-            source_type="REVIEW",
-            source_revision_id=doc.current_revision_id,
-            scene_document=scene,
-        )
+        previously_submitted = _latest_review_revision(db, doc)
+        baseline = _review_baseline(db, doc)
+        unchanged = baseline is not None and _scene_fingerprint(_loads(baseline.scene_document)) == _scene_fingerprint(scene)
+        if unchanged:
+            review_rev = baseline
+            if not _is_submitted(baseline):
+                baseline.submitted_at = _now()
+                db.touch(baseline)
+                newly_submitted = True
+        else:
+            plan = floor_plan if isinstance(floor_plan, dict) else None
+            if plan is None and doc.current_revision_id:
+                current = db.get(Revision, doc.current_revision_id)
+                plan = _loads(current.floor_plan) if current else {}
+            review_rev = _add_revision(
+                db,
+                doc=doc,
+                floor_plan=plan or {},
+                created_by=actor.id,
+                source_type="REVIEW",
+                source_revision_id=doc.current_revision_id,
+                scene_document=scene,
+            )
+            review_rev.submitted_at = _now()
+            created = True
+            newly_submitted = True
+        doc.current_revision_id = review_rev.id
+        if newly_submitted:
+            _record_version_submitted(db, actor, project, review_rev, previously_submitted)
     if project.status == "IN_PROGRESS":
         _set_status(db, project, "FOR_CHECKING", actor.id)
         if actor.role == "CLIENT":
             notify(db, project.architect_id, "STATUS_CHANGED", f"{project.name} was sent for review", project.id)
-        else:
+        elif not newly_submitted:
             notify(db, project.client_id, "STATUS_CHANGED", f"{project.name} is ready for your review", project.id)
     db.commit()
     db.refresh(project)
@@ -747,7 +845,149 @@ def submit_review(
     if review_rev is not None:
         data["submitted_revision_id"] = review_rev.id
         data["version"] = review_rev.version
+    data["created"] = created
     return data
+
+
+def _record_version_submitted(
+    db: Session, actor: Actor, project: Project, review_rev: Revision, previous: Revision | None,
+) -> None:
+    prev_scene = _loads(previous.scene_document) if previous is not None and previous.id != review_rev.id else None
+    changes = summarize_changes(prev_scene, _loads(review_rev.scene_document))
+    resolved = (
+        db.query(Comment)
+        .filter(Comment.project_id == project.id)
+        .all()
+    )
+    linked = []
+    for c in resolved:
+        if c.resolved_at is not None and c.resolution_revision_id is None and c.parent_id is None:
+            c.resolution_revision_id = review_rev.id
+            db.touch(c)
+            linked.append(c.id)
+    log_event(
+        db,
+        event_type="VERSION_SUBMITTED",
+        actor_id=actor.id,
+        project_id=project.id,
+        revision_id=review_rev.id,
+        target=review_rev.id,
+        metadata={
+            "version": review_rev.version,
+            "previous_version": previous.version if previous is not None and previous.id != review_rev.id else None,
+            "changes": changes,
+            "resolved_comment_ids": linked,
+            "restored_from_version": _restored_from_version(db, review_rev),
+        },
+    )
+    notify(db, project.client_id, "VERSION_SUBMITTED", f"Version {review_rev.version} of {project.name} is ready for your review", project.id)
+
+
+def _restored_from_version(db: Session, rev: Revision) -> int | None:
+    if rev.source_type != "RESTORED" or not rev.source_revision_id:
+        return None
+    src = db.get(Revision, rev.source_revision_id)
+    return src.version if src else None
+
+
+def restore_revision(db: Session, actor: Actor, revision_id: str) -> dict:
+    rev = db.get(Revision, revision_id)
+    if rev is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Revision not found")
+    doc = db.get(DesignDocument, rev.design_document_id)
+    project = db.get(Project, doc.project_id) if doc else None
+    if project is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Project not found")
+    _require_view(db, actor, project.id)
+    if not perm.can_restore_version(actor, project_as_dict(project, db)):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the assigned architect can restore versions")
+    scene = normalize_scene_document(_loads(rev.scene_document))
+    if not _is_scene_document(scene):
+        raise HTTPException(status.HTTP_409_CONFLICT, "This version has no restorable SceneDocument")
+    restored = _add_revision(
+        db,
+        doc=doc,
+        floor_plan=_loads(rev.floor_plan),
+        created_by=actor.id,
+        source_type="RESTORED",
+        source_revision_id=rev.id,
+        scene_document=scene,
+    )
+    doc.current_revision_id = restored.id
+    _write_working_scene(doc, scene)
+    log_event(
+        db,
+        event_type="VERSION_RESTORED",
+        actor_id=actor.id,
+        project_id=project.id,
+        revision_id=restored.id,
+        target=rev.id,
+        metadata={"from_version": rev.version, "to_version": restored.version, "from_revision_id": rev.id},
+    )
+    notify(db, project.client_id, "VERSION_RESTORED", f"Version {rev.version} of {project.name} was restored as Version {restored.version}", project.id)
+    db.commit()
+    db.refresh(restored)
+    return serialize_revision(restored, current_id=doc.current_revision_id, include_payload=True)
+
+
+ACTIVITY_TYPES = (
+    "COMMENT_CREATED",
+    "COMMENT_EDITED",
+    "COMMENT_REPLIED",
+    "COMMENT_RESOLVED",
+    "COMMENT_REOPENED",
+    "VERSION_SUBMITTED",
+    "VERSION_RESTORED",
+    "STATUS_CHANGED",
+    "CLIENT_APPROVED",
+    "ARCHITECT_APPROVED",
+    "PROJECT_PUBLISHED",
+    "AI_GENERATION_COMPLETED",
+    "CANDIDATE_SELECTED",
+)
+
+
+def list_project_activity(db: Session, actor: Actor, project_id: str) -> list[dict]:
+    project = _require_view(db, actor, project_id)
+    rows = (
+        db.query(AuditEvent)
+        .filter(AuditEvent.project_id == project.id, AuditEvent.event_type.in_(list(ACTIVITY_TYPES)))
+        .order_by(AuditEvent.created_at.desc())
+        .all()
+    )
+    actors = _audit_actors(db, [e.actor_id for e in rows])
+    doc = _document(db, project)
+    revisions = {r.id: r for r in _revisions_desc(db, doc)}
+    comment_ids = [e.target for e in rows if e.event_type.startswith("COMMENT_") and e.target]
+    comments = {c.id: c for c in db.query(Comment).filter(Comment.id.in_(comment_ids or ["__none__"])).all()}
+    hide_drafts = not perm.can_view_drafts(actor, project_as_dict(project, db))
+    out = []
+    for e in rows:
+        rev = revisions.get(e.revision_id) if e.revision_id else None
+        comment = comments.get(e.target) if e.target else None
+        resolution_rev = revisions.get(comment.resolution_revision_id) if comment and comment.resolution_revision_id else None
+        out.append({
+            "id": e.id,
+            "event_type": e.event_type,
+            "created_at": e.created_at.isoformat() if e.created_at else None,
+            "actor_id": e.actor_id,
+            **_actor_fields(actors.get(e.actor_id) if e.actor_id else None),
+            "revision_id": e.revision_id,
+            "version": rev.version if rev else None,
+            "version_viewable": bool(rev) and (not hide_drafts or _is_submitted(rev) or rev.source_type == "PUBLISHED"),
+            "target": e.target,
+            "metadata": _loads(e.metadata_json) or {},
+            "comment": {
+                "id": comment.id,
+                "body": comment.body,
+                "parent_id": comment.parent_id,
+                "resolved": comment.resolved_at is not None,
+                "resolution_note": comment.resolution_note,
+                "resolution_version": resolution_rev.version if resolution_rev else None,
+                "resolution_revision_id": comment.resolution_revision_id,
+            } if comment else None,
+        })
+    return out
 
 
 def resume_after_revision(db: Session, actor: Actor, project_id: str) -> Project:
@@ -832,7 +1072,7 @@ def publish_project(
     _set_status(db, project, "PUBLISHED", actor.id)
     log_event(db, event_type="PROJECT_PUBLISHED", actor_id=actor.id, project_id=project.id, revision_id=published.id)
     notify(db, project.client_id, "PROJECT_PUBLISHED", f"{project.name} was published", project.id)
-    notify_it(db, "PROJECT_PUBLISHED", f"{project.name} was published", project.id)
+    notify_admins(db, "PROJECT_PUBLISHED", f"{project.name} was published", project.id)
     db.commit()
     db.refresh(published)
     return published
@@ -877,6 +1117,29 @@ def mark_all_notifications_read(db: Session, actor: Actor) -> int:
     return count
 
 
+def _audit_actors(db: Session, actor_ids: list[str | None]) -> dict[str, dict]:
+    """Resolve audit actors from live profiles, falling back to historical (deleted) identities."""
+    ids = list({i for i in actor_ids if i})
+    if not ids:
+        return {}
+    out: dict[str, dict] = {}
+    for u in db.query(User).filter(User.id.in_(ids)).all():
+        out[u.id] = {"email": u.email, "role": u.role, "deleted": False}
+    missing = [i for i in ids if i not in out]
+    if missing:
+        for h in db.query(HistoricalActor).filter(HistoricalActor.id.in_(missing)).all():
+            out[h.id] = {"email": h.email, "role": h.role, "deleted": True}
+    return out
+
+
+def _actor_fields(info: dict | None) -> dict:
+    return {
+        "actor_email": info["email"] if info else None,
+        "actor_role": info["role"] if info else None,
+        "actor_deleted": bool(info and info["deleted"]),
+    }
+
+
 def list_audit(db: Session, actor: Actor, project_id: str | None = None) -> list[dict]:
     if not perm.can_view_audit(actor):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot view audit")
@@ -891,17 +1154,13 @@ def list_audit(db: Session, actor: Actor, project_id: str | None = None) -> list
         ids = [p.id for p in db.query(Project).filter(Project.client_id == actor.id).all()]
         q = q.filter(AuditEvent.project_id.in_(ids or ["__none__"]))
     rows = q.order_by(AuditEvent.created_at.desc()).limit(500).all()
-    actor_ids = {e.actor_id for e in rows if e.actor_id}
-    emails = {}
-    if actor_ids:
-        for u in db.query(User).filter(User.id.in_(list(actor_ids))).all():
-            emails[u.id] = u.email
+    actors = _audit_actors(db, [e.actor_id for e in rows])
     return [
         {
             "id": e.id,
             "event_type": e.event_type,
             "actor_id": e.actor_id,
-            "actor_email": emails.get(e.actor_id) if e.actor_id else None,
+            **_actor_fields(actors.get(e.actor_id) if e.actor_id else None),
             "project_id": e.project_id,
             "revision_id": e.revision_id,
             "target": e.target,
@@ -951,11 +1210,11 @@ def patch_account(
     if approved is not None:
         user.approved = approved
     if role is not None:
-        if role in ("MAIN_ADMIN", "IT_PERSONNEL") and actor.role != "MAIN_ADMIN":
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot assign that role")
+        if role not in ROLES:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown role")
         user.role = role
     if suspended is not None:
-        if actor.role != "MAIN_ADMIN":
+        if not perm.can_suspend_accounts(actor):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Only admin can suspend an architect")
         if user.role != "ARCHITECT":
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Only architects can be suspended")
@@ -975,8 +1234,8 @@ def patch_account(
 
 
 def soft_delete_account(db: Session, actor: Actor, user_id: str) -> User:
-    if actor.role != "IT_PERSONNEL":
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only IT can delete a suspended architect")
+    if not perm.can_delete_accounts(actor):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only admin can delete a suspended architect")
     user = db.get(User, user_id)
     if user is None or getattr(user, "deleted_at", None):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
@@ -1021,6 +1280,7 @@ def serialize_revision(r: Revision, current_id: str | None = None, include_paylo
         "created_by": r.created_by,
         "source_type": r.source_type,
         "created_at": r.created_at.isoformat() if r.created_at else None,
+        "submitted_at": r.submitted_at.isoformat() if r.submitted_at else None,
         "is_current": r.id == current_id,
     }
     if include_payload:
@@ -1058,10 +1318,26 @@ def serialize_job(job: GenerationJob) -> dict:
     }
 
 
-def serialize_comment(c: Comment, db: Session | None = None) -> dict:
-    author = db.get(User, c.author_id) if db is not None else None
+def serialize_comment(c: Comment, db: Session | None = None, ctx: dict | None = None) -> dict:
+    if ctx is None and db is not None:
+        ctx = _comment_context(db, c.project_id, [c])
+    ctx = ctx or {"history": {}, "users": {}, "versions": {}}
+    author = ctx["users"].get(c.author_id) or (db.get(User, c.author_id) if db is not None else None)
+    resolver = ctx["users"].get(c.resolved_by) if c.resolved_by else None
     x, y = normalize_comment_coords(c.x, c.y, getattr(c, "coord_units", None))
     return {
+        "parent_id": c.parent_id,
+        "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+        "edit_history": ctx["history"].get(c.id, []),
+        "resolved": c.resolved_at is not None,
+        "resolved_at": c.resolved_at.isoformat() if c.resolved_at else None,
+        "resolved_by": c.resolved_by,
+        "resolved_by_email": resolver.email if resolver else None,
+        "resolved_by_role": resolver.role if resolver else None,
+        "resolution_note": c.resolution_note,
+        "resolution_revision_id": c.resolution_revision_id,
+        "resolution_version": ctx["versions"].get(c.resolution_revision_id) if c.resolution_revision_id else None,
+        "revision_version": ctx["versions"].get(c.revision_id) if c.revision_id else None,
         "id": c.id,
         "project_id": c.project_id,
         "stage": c.stage,
@@ -1095,6 +1371,8 @@ def project_detail(db: Session, actor: Actor, project_id: str) -> dict:
     current = db.get(Revision, doc.current_revision_id) if doc.current_revision_id else None
     submitted = _active_review_revision(db, doc, project)
     payload = project_as_dict(project, db)
+    if current is not None and not perm.can_view_drafts(actor, payload) and not _client_may_view(current):
+        current = _latest_review_revision(db, doc)
     invitation = (
         db.query(Invitation)
         .filter(Invitation.project_id == project.id)
@@ -1108,7 +1386,7 @@ def project_detail(db: Session, actor: Actor, project_id: str) -> dict:
         "stage": doc.stage,
         "current_revision_id": doc.current_revision_id,
     }
-    if perm.can_edit_design(actor, payload):
+    if perm.can_view_drafts(actor, payload):
         working = json.loads(doc.working_scene_document) if doc.working_scene_document else None
         document["working_scene_document"] = working
         document["working_updated_at"] = doc.working_updated_at.isoformat() if doc.working_updated_at else None
@@ -1121,6 +1399,7 @@ def project_detail(db: Session, actor: Actor, project_id: str) -> dict:
         "permissions": {
             "canViewProject": perm.can_view_project(actor, payload),
             "canEditDesign": perm.can_edit_design(actor, payload),
+            "canViewDrafts": perm.can_view_drafts(actor, payload),
             "canGenerate": perm.can_generate(actor, payload),
             "canComment": perm.can_comment(actor, payload),
             "canSelectCandidate": perm.can_select_candidate(actor, payload),
@@ -1177,13 +1456,13 @@ def _get_invitation_by_token(db: Session, token: str) -> Invitation:
 def _can_invite(actor: Actor) -> bool:
     if actor.role == "ARCHITECT" and actor.approved:
         return True
-    if actor.role == "MAIN_ADMIN":
+    if perm.is_admin(actor):
         return True
     return False
 
 
 def _can_manage_invitation(actor: Actor, inv: Invitation) -> bool:
-    if actor.role == "MAIN_ADMIN":
+    if perm.is_admin(actor):
         return True
     return actor.role == "ARCHITECT" and actor.approved and inv.architect_id == actor.id
 
@@ -1295,7 +1574,7 @@ def create_invitation(db: Session, actor: Actor, project_id: str, email: str, re
 
 def list_project_invitations(db: Session, actor: Actor, project_id: str) -> list[dict]:
     project = _require_view(db, actor, project_id)
-    if actor.role not in ("ARCHITECT", "MAIN_ADMIN", "IT_PERSONNEL"):
+    if actor.role != "ARCHITECT" and not perm.is_admin(actor):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot list invitations")
     if actor.role == "ARCHITECT" and project.architect_id != actor.id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot list invitations")
@@ -1311,7 +1590,7 @@ def list_invitations(db: Session, actor: Actor) -> list[dict]:
         user = db.get(User, actor.id)
         email = (user.email if user else "").lower()
         q = q.filter(Invitation.email == email)
-    elif actor.role not in ("MAIN_ADMIN", "IT_PERSONNEL"):
+    elif not perm.is_admin(actor):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot list invitations")
     rows = q.order_by(Invitation.created_at.desc()).all()
     payload = [serialize_invitation(_refresh_invitation_status(db, row), db=db) for row in rows]
@@ -1566,12 +1845,12 @@ def complete_client_account(
 
 
 def list_architect_clients(db: Session, actor: Actor) -> list[dict]:
-    if actor.role not in ("ARCHITECT", "MAIN_ADMIN", "IT_PERSONNEL"):
+    if actor.role != "ARCHITECT" and not perm.is_admin(actor):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot list clients")
     rows: list[dict] = []
     seen: set[tuple[str | None, str]] = set()
     invites = db.query(Invitation).filter(Invitation.architect_id == actor.id).order_by(Invitation.created_at.desc()).all()
-    if actor.role in ("MAIN_ADMIN", "IT_PERSONNEL"):
+    if perm.is_admin(actor):
         invites = db.query(Invitation).order_by(Invitation.created_at.desc()).all()
     for inv in invites:
         _refresh_invitation_status(db, inv)
@@ -1651,10 +1930,6 @@ def list_inquiries(db: Session, actor: Actor) -> list[dict]:
     return [serialize_inquiry(item) for item in rows]
 
 
-def _can_review_applications(actor: Actor) -> bool:
-    return actor.role in ("MAIN_ADMIN", "IT_PERSONNEL")
-
-
 def serialize_architect_application(row: ArchitectApplication, token: str | None = None, email_sent: bool | None = None) -> dict:
     data = {
         "id": row.id,
@@ -1679,8 +1954,12 @@ def serialize_architect_application(row: ArchitectApplication, token: str | None
 
 
 def create_architect_application(db: Session, actor: Actor, email: str, full_name: str, information: str | None) -> dict:
-    if actor.role != "MAIN_ADMIN":
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the main admin can invite architects")
+    """Admin invites an architect in one step: the request is recorded, approved, and the invite sent.
+
+    If the invite email fails the request stays PENDING_APPROVAL so it can be retried from the queue.
+    """
+    if not perm.can_review_architect_applications(actor):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only admin can invite architects")
     email = email.lower().strip()
     name = (full_name or "").strip()
     if not email or "@" not in email:
@@ -1708,22 +1987,26 @@ def create_architect_application(db: Session, actor: Actor, email: str, full_nam
     log_event(db, event_type="ARCHITECT_APPLICATION_CREATED", actor_id=actor.id, target=email, metadata={"application_id": row.id})
     db.commit()
     db.refresh(row)
-    return serialize_architect_application(row)
+    return _approve_application(db, actor, row)
 
 
 def list_architect_applications(db: Session, actor: Actor) -> list[dict]:
-    if not _can_review_applications(actor):
+    if not perm.can_review_architect_applications(actor):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot list architect applications")
     rows = db.query(ArchitectApplication).order_by(ArchitectApplication.created_at.desc()).all()
     return [serialize_architect_application(row) for row in rows]
 
 
 def approve_architect_application(db: Session, actor: Actor, application_id: str) -> dict:
-    if actor.role not in ("IT_PERSONNEL", "MAIN_ADMIN"):
+    if not perm.can_review_architect_applications(actor):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot approve architect applications")
     row = db.get(ArchitectApplication, application_id)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Application not found")
+    return _approve_application(db, actor, row)
+
+
+def _approve_application(db: Session, actor: Actor, row: ArchitectApplication) -> dict:
     if row.status != "PENDING_APPROVAL":
         raise HTTPException(status.HTTP_409_CONFLICT, "This request is not pending approval")
     if _email_already_registered(db, row.email):
@@ -1754,7 +2037,7 @@ def approve_architect_application(db: Session, actor: Actor, application_id: str
 
 
 def reject_architect_application(db: Session, actor: Actor, application_id: str, reason: str | None) -> dict:
-    if actor.role not in ("IT_PERSONNEL", "MAIN_ADMIN"):
+    if not perm.can_review_architect_applications(actor):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot reject architect applications")
     row = db.get(ArchitectApplication, application_id)
     if row is None:

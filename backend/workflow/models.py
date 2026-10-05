@@ -120,6 +120,7 @@ class Revision:
     created_by: str = ""
     source_type: str = "AI_GENERATED"
     created_at: datetime = field(default_factory=_now)
+    submitted_at: datetime | None = None
 
 
 @entity
@@ -160,6 +161,12 @@ class Comment:
     # None = legacy plan-feet pin; "metric" = meters.
     coord_units: str | None = None
     created_at: datetime = field(default_factory=_now)
+    parent_id: str | None = None
+    updated_at: datetime | None = None
+    resolved_at: datetime | None = None
+    resolved_by: str | None = None
+    resolution_note: str | None = None
+    resolution_revision_id: str | None = None
 
 
 @entity
@@ -238,8 +245,19 @@ class Inquiry:
     created_at: datetime = field(default_factory=_now)
 
 
+@entity
+class HistoricalActor:
+    """Snapshot of a deleted account so append-only audit rows keep identifying who acted and in which role."""
+    id: str = field(default_factory=_uuid)
+    email: str = ""
+    full_name: str | None = None
+    role: str = ""
+    deleted_at: datetime = field(default_factory=_now)
+
+
 TABLES = {
     User: "profiles",
+    HistoricalActor: "historical_actors",
     Project: "projects",
     ClientBrief: "client_briefs",
     SiteConstraint: "site_constraints",

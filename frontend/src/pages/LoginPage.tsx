@@ -4,6 +4,7 @@ import KiyubLogo from '../components/KiyubLogo'
 import LandingHeader from '../components/LandingHeader'
 import PasswordField from '../components/PasswordField'
 import { useAuth } from '../workflow/auth'
+import { roleHome } from '../workflow/paths'
 
 export default function LoginPage() {
   const { login } = useAuth()
@@ -20,10 +21,7 @@ export default function LoginPage() {
     setError(null)
     try {
       const user = await login(email, password)
-      if (user.role === 'CLIENT') nav('/client')
-      else if (user.role === 'ARCHITECT') nav('/architect')
-      else if (user.role === 'MAIN_ADMIN') nav('/admin')
-      else nav('/it')
+      nav(roleHome(user.role))
     } catch (err: unknown) {
       const ax = err as { response?: { data?: { detail?: string } } }
       setError(ax.response?.data?.detail || 'Login failed')

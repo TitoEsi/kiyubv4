@@ -61,12 +61,8 @@ def _approved_architect_token(client: TestClient, email: str) -> str:
         headers=auth(tok["admin"]["token"]),
     )
     assert created.status_code == 200, created.text
-    approved = client.post(
-        f"/api/architect-applications/{created.json()['id']}/approve",
-        headers=auth(tok["admin"]["token"]),
-    )
-    assert approved.status_code == 200, approved.text
-    return approved.json()["token"]
+    assert created.json()["status"] == "APPROVED"
+    return created.json()["token"]
 
 
 def _signup(client: TestClient, email: str, token: str, **flags):

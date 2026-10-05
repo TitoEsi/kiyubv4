@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useLocation } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import WorkflowShell from './WorkflowShell'
 import { AuditEvent, listAccounts, listAudit, listProjects, Project, WorkflowUser } from '../workflow/api'
 import { displayNameFromEmail, formatDate, formatRelative } from '../workflow/displayName'
@@ -12,8 +12,7 @@ function statusOf(u: WorkflowUser) {
 }
 
 export default function StaffArchitectsPage() {
-  const loc = useLocation()
-  const base = loc.pathname.startsWith('/it') ? '/it/architects' : '/admin/architects'
+  const base = '/admin/architects'
   const [users, setUsers] = useState<WorkflowUser[]>([])
   const [projects, setProjects] = useState<Project[]>([])
   const [audit, setAudit] = useState<AuditEvent[]>([])

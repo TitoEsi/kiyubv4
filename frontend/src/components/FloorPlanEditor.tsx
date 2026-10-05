@@ -1,9 +1,7 @@
-import { useState, useRef, useEffect, useMemo } from 'react'
+import { useState, useRef, useEffect, useMemo, type ReactNode } from 'react'
 import {
-  ArrowsOut,
   ChatCircle,
   Cube,
-  DownloadSimple,
   House,
   NotePencil,
   SquaresFour,
@@ -16,16 +14,17 @@ import View3D from './View3D'
 import RoomInteriorView from './RoomInteriorView'
 import DesignScore from './DesignScore'
 import ChatPanel from './ChatPanel'
-import { exportPdf } from '../api/client'
+import ExportPdfButton from './ExportPdfButton'
 import ScenePlan2D from './ScenePlan2D'
 import { loadLiveScene } from '../scene-graph/edit/load-scene'
-import { PlanAnnotation } from './planAnnotations'
-import { MeasurementInput } from './MeasurementInput'
+import type { Comment } from '../workflow/api'
+import { buildThreads } from '../workflow/commentThreads'
+import type { CommentActions } from './CommentThread'
+import type { SiteLot } from '../scene-graph/site/site-context'
 import { useFormat } from '../units/UnitsProvider'
-
-const DEFAULT_CEILING_M = 2.7432
-const ROOM_MIN_M = 1.8288
-const ROOM_MAX_M = 18.288
+import CanvasRightSidebar from './CanvasRightSidebar'
+import { DEFAULT_CEILING_M, sceneRoomRows, sceneSummary } from './room-rows'
+import type { PublishedExport } from '../workflow/publishedExport'
 
 interface Props {
   plan: FloorPlan
@@ -36,16 +35,20 @@ interface Props {
   role?: string
   dirty?: boolean
   onSave?: () => void
-  comments?: PlanAnnotation[]
-  currentUserId?: string
+  comments?: Comment[]
+  commentActions?: CommentActions
   allowAnnotations?: boolean
+  /** Show the Comments section in the sidebar (also when pinning is disabled). */
+  showComments?: boolean
   onAddAnnotation?: (payload: { body: string; x: number; y: number; object_id: string | null }) => void
-  onUpdateAnnotation?: (id: string, body: string) => void
-  onDeleteAnnotation?: (id: string) => void
-  onMoveAnnotation?: (id: string, x: number, y: number) => void
   selectedAnnotationId?: string | null
   onSelectAnnotation?: (id: string | null) => void
   existingScene?: SceneDocument | null
+  lot?: SiteLot | null
+  /** Replaces the default read-only banner text. */
+  readOnlyBanner?: ReactNode
+  /** Published scene to export. Null until the project is published. */
+  publishedExport?: PublishedExport | null
 }
 
 type MainTab = 'plan' | 'score' | 'chat'
@@ -67,11 +70,14 @@ const VIEW_BUTTONS: { id: ViewMode; label: string; Icon: typeof SquaresFour }[] 
 
 export default function FloorPlanEditor({
   plan, onUpdate, readOnly = false, projectId, revisionId, role, dirty, onSave,
-  comments = [], currentUserId, allowAnnotations = false,
-  onAddAnnotation, onUpdateAnnotation, onDeleteAnnotation, onMoveAnnotation,
+  comments = [], commentActions, allowAnnotations = false, showComments = allowAnnotations,
+  onAddAnnotation,
   selectedAnnotationId: selectedAnnotationIdProp,
   onSelectAnnotation: onSelectAnnotationProp,
   existingScene,
+  lot,
+  readOnlyBanner,
+  publishedExport = null,
 }: Props) {
   const [tab, setTab] = useState<MainTab>('plan')
   const [viewMode, setViewMode] = useState<ViewMode>('2d')
@@ -88,8 +94,8 @@ export default function FloorPlanEditor({
     [plan, projectId, existingScene],
   )
   const selectedAnnotationId = selectedAnnotationIdProp ?? internalAnnotationId
+  const threads = useMemo(() => buildThreads(comments), [comments])
   const [draft, setDraft] = useState<{ x: number; y: number; object_id: string | null; body: string } | null>(null)
-  const [exportError, setExportError] = useState<string | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -122,13 +128,10 @@ export default function FloorPlanEditor({
   const primary = tabs.filter(t => !narrow || t.id === 'plan')
   const extra = tabs.filter(t => narrow && t.id !== 'plan')
 
-  const selectedRoom = plan.rooms.find(r => r.id === selectedId)
   const fmt = useFormat()
   const ceilH = plan.ceilingHeight || DEFAULT_CEILING_M
-  const livingAreaM2 = plan.rooms
-    .filter(r => !['garage', 'patio', 'deck', 'rear_patio', 'outdoor_living', 'front_porch'].includes(r.type))
-    .reduce((s, r) => s + r.width * r.height, 0)
-  const viewOnlyCopy = readOnly && (role === 'CLIENT' || role === 'MAIN_ADMIN' || role === 'IT_PERSONNEL')
+  const openInterior = (id: string) => setInteriorRoom(plan.rooms.find(r => r.id === id) ?? null)
+  const viewOnlyCopy = readOnly && role === 'CLIENT'
 
   return (
     <div className="editor">
@@ -142,9 +145,9 @@ export default function FloorPlanEditor({
 
       {readOnly && (
         <div className="editor-readonly-banner" role="status">
-          {viewOnlyCopy
+          {readOnlyBanner ?? (viewOnlyCopy
             ? 'Viewing published or client copy — editing disabled'
-            : 'View only — editing disabled'}
+            : 'View only — editing disabled')}
         </div>
       )}
       {!readOnly && dirty && onSave && (
@@ -156,7 +159,7 @@ export default function FloorPlanEditor({
 
       <div className="editor-toolbar">
         <span className="editor-title">{plan.name}</span>
-        <span className="editor-ceiling-tag">{fmt.length(ceilH)} ceilings</span>
+        <span className="editor-ceiling-tag">Ceiling Height {fmt.length(ceilH)}</span>
         {role && <span className="editor-ceiling-tag">{role}</span>}
         {projectId && revisionId && (
           <span className="editor-ceiling-tag" title={`${projectId} / ${revisionId}`}>Rev</span>
@@ -198,21 +201,7 @@ export default function FloorPlanEditor({
           )}
         </div>
 
-        <button
-          type="button"
-          className="export-btn"
-          onClick={async () => {
-            try {
-              setExportError(null)
-              await exportPdf(plan, fmt.unit)
-            } catch {
-              setExportError('Could not export PDF.')
-            }
-          }}
-        >
-          <DownloadSimple size={16} aria-hidden /> Export PDF
-        </button>
-        {exportError && <span className="error-msg editor-export-error" role="alert">{exportError}</span>}
+        <ExportPdfButton published={publishedExport} />
         {allowAnnotations && viewMode === '2d' && tab === 'plan' && (
           <button
             type="button"
@@ -244,17 +233,19 @@ export default function FloorPlanEditor({
                   </button>
                 ))}
               </div>
-              {viewMode === '2d' && (
-                <div className="architect-zoom">
-                  <button type="button" aria-label="Zoom in" onClick={() => setZoom(z => Math.min(4, z * 1.15))}>+</button>
-                  <button type="button" aria-label="Zoom out" onClick={() => setZoom(z => Math.max(0.4, z / 1.15))}>−</button>
-                </div>
-              )}
             </div>
+            {viewMode === '2d' && (
+              <div className="architect-zoom">
+                <button type="button" aria-label="Zoom in" onClick={() => setZoom(z => Math.min(4, z * 1.15))}>+</button>
+                <button type="button" aria-label="Zoom out" onClick={() => setZoom(z => Math.max(0.4, z / 1.15))}>−</button>
+              </div>
+            )}
 
             {viewMode === '2d' ? (
               <ScenePlan2D
                 scene={liveScene}
+                lot={lot}
+                insets={{ top: 56 }}
                 tool="select"
                 snapEnabled={false}
                 grid={0.3}
@@ -264,10 +255,10 @@ export default function FloorPlanEditor({
                 zoom={zoom}
                 pan={pan}
                 onPanZoom={(z, p) => { setZoom(z); setPan(p) }}
-                annotations={comments}
+                annotations={showComments ? threads : []}
                 annotationMode={commentMode}
                 selectedAnnotationId={selectedAnnotationId}
-                currentUserId={currentUserId}
+                commentActions={commentActions}
                 draft={draft}
                 onPlaceAnnotation={(x, y, roomId) => setDraft({ x, y, object_id: roomId, body: draft?.body || '' })}
                 onSelectAnnotation={selectAnnotation}
@@ -279,102 +270,29 @@ export default function FloorPlanEditor({
                   setCommentMode(false)
                 }}
                 onDraftCancel={() => setDraft(null)}
-                onUpdateAnnotation={onUpdateAnnotation}
-                onDeleteAnnotation={onDeleteAnnotation}
-                onMoveAnnotation={onMoveAnnotation}
               />
             ) : (
               <View3D scene={liveScene} viewMode={viewMode} />
             )}
           </div>
 
-          <div className="inspector">
-            <div className="inspector-section">
-              <div className="inspector-title">Rooms</div>
-              <div className="room-list">
-                {plan.rooms.map(room => (
-                  <div
-                    key={room.id}
-                    className={`room-item ${room.id === selectedId ? 'selected' : ''}`}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => setSelectedId(room.id === selectedId ? null : room.id)}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault()
-                        setSelectedId(room.id === selectedId ? null : room.id)
-                      }
-                    }}
-                  >
-                    <div className="room-swatch" style={{ background: room.color }} />
-                    <div style={{ flex: 1 }}>
-                      <div className="room-item-name">{room.name}</div>
-                      <div className="room-item-size">
-                        {fmt.dims(room.width, room.height)} · {fmt.area(room.width * room.height)}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      className="room-interior-btn"
-                      aria-label={`View interior of ${room.name}`}
-                      onClick={e => { e.stopPropagation(); setInteriorRoom(room) }}
-                    >
-                      <ArrowsOut size={14} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {selectedRoom && (
-              <div className="inspector-section room-edit">
-                <div className="inspector-title">{readOnly ? 'Room' : 'Edit Room'}</div>
-                <div className="inspector-name">{selectedRoom.name}</div>
-                <div className="inspector-field">
-                  <label htmlFor="room-width">Width ({fmt.unit})</label>
-                  <MeasurementInput
-                    id="room-width"
-                    min={ROOM_MIN_M}
-                    max={ROOM_MAX_M}
-                    value={selectedRoom.width}
-                    disabled={readOnly}
-                    showUnit={false}
-                    onCommit={v => updateRoomDim(selectedRoom.id, 'width', v)}
-                  />
-                </div>
-                <div className="inspector-field">
-                  <label htmlFor="room-depth">Depth ({fmt.unit})</label>
-                  <MeasurementInput
-                    id="room-depth"
-                    min={ROOM_MIN_M}
-                    max={ROOM_MAX_M}
-                    value={selectedRoom.height}
-                    disabled={readOnly}
-                    showUnit={false}
-                    onCommit={v => updateRoomDim(selectedRoom.id, 'height', v)}
-                  />
-                </div>
-                <div className="inspector-area">{fmt.area(selectedRoom.width * selectedRoom.height)}</div>
-                <button type="button" className="view-interior-btn" onClick={() => setInteriorRoom(selectedRoom)}>
-                  View Interior
-                </button>
-              </div>
-            )}
-
-            <div className="inspector-section stats">
-              <div className="inspector-title">Summary</div>
-              <div className="stat-row"><span>Rooms</span><span>{plan.rooms.length}</span></div>
-              <div className="stat-row">
-                <span>Living area</span>
-                <span>{fmt.area(livingAreaM2)}</span>
-              </div>
-              <div className="stat-row">
-                <span>Footprint</span>
-                <span>{fmt.dims(plan.totalWidth, plan.totalHeight)}</span>
-              </div>
-              <div className="stat-row"><span>Ceiling</span><span>{fmt.length(ceilH)}</span></div>
-            </div>
-          </div>
+          <CanvasRightSidebar
+            rooms={sceneRoomRows(liveScene)}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            onExpand={openInterior}
+            summary={sceneSummary(liveScene)}
+            roomTitle={readOnly ? 'Room' : 'Edit Room'}
+            editable={!readOnly}
+            onResize={(id, axis, v) => updateRoomDim(id, axis === 'width' ? 'width' : 'height', v)}
+            onViewInterior={openInterior}
+            comments={showComments ? {
+              threads,
+              actions: commentActions,
+              selectedId: selectedAnnotationId,
+              onSelect: selectAnnotation,
+            } : undefined}
+          />
         </div>
       )}
 

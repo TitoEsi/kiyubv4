@@ -12,7 +12,9 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
 
 STATUSES = tuple(ALLOWED_TRANSITIONS)
 STAGES = ("CLIENT_BRIEF", "AI_PROPOSAL", "ARCHITECT_DESIGN", "FINAL_DESIGN")
-ROLES = ("CLIENT", "ARCHITECT", "MAIN_ADMIN", "IT_PERSONNEL")
+ROLES = ("CLIENT", "ARCHITECT", "ADMIN")
+# Retired role values that may still appear on historical audit records; never valid for login or authorization.
+HISTORICAL_ROLES = ("MAIN_ADMIN", "IT_PERSONNEL")
 SOURCE_TYPES = ("AI_GENERATED", "ARCHITECT_EDIT", "REVISION", "PUBLISHED")
 
 

@@ -28,8 +28,10 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Literal, Optional
+
+from architectural_styles import RETIRED_STYLES, retired_style_message
 
 from generator import generate_floor_plan
 from exporter import export_to_dxf, export_to_pdf
@@ -130,6 +132,13 @@ class Constraints(BaseModel):
 
     # Style
     ceilingHeight: str = "standard"
+
+    @field_validator("style")
+    @classmethod
+    def _style_offered(cls, v: str) -> str:
+        if v in RETIRED_STYLES:
+            raise ValueError(retired_style_message(v))
+        return v
 
 
 DEFAULT_LIVING_AREA_M2 = ft2_to_m2(1800)
@@ -673,8 +682,8 @@ def _summarize_plan(plan: dict) -> str:
     rooms = plan.get("rooms", [])
     lines = [
         f"Name: {plan.get('name', 'Plan')}",
-        f"Footprint: {plan.get('totalWidth', 0)}ft × {plan.get('totalHeight', 0)}ft",
-        f"Ceiling height: {plan.get('ceilingHeight', 9)}ft",
+        f"Building footprint: {plan.get('totalWidth', 0)}ft × {plan.get('totalHeight', 0)}ft",
+        f"Ceiling Height: {plan.get('ceilingHeight', 9)}ft",
         f"Rooms ({len(rooms)}):",
     ]
     for r in rooms:

@@ -7,8 +7,7 @@ from .state import ROLES
 
 CLIENT = "CLIENT"
 ARCHITECT = "ARCHITECT"
-MAIN_ADMIN = "MAIN_ADMIN"
-IT_PERSONNEL = "IT_PERSONNEL"
+ADMIN = "ADMIN"
 
 
 @dataclass(frozen=True)
@@ -19,12 +18,16 @@ class Actor:
     suspended: bool = False
 
 
+def is_admin(actor: Actor) -> bool:
+    return actor.role == ADMIN
+
+
 def _assigned(actor: Actor, project: dict) -> bool:
     if actor.role == CLIENT:
         return project.get("client_id") == actor.id
     if actor.role == ARCHITECT:
         return project.get("architect_id") == actor.id
-    if actor.role in (MAIN_ADMIN, IT_PERSONNEL):
+    if is_admin(actor):
         return True
     return False
 
@@ -32,7 +35,7 @@ def _assigned(actor: Actor, project: dict) -> bool:
 def can_view_project(actor: Actor, project: dict) -> bool:
     if actor.role not in ROLES:
         return False
-    if actor.role in (MAIN_ADMIN, IT_PERSONNEL):
+    if is_admin(actor):
         return True
     return _assigned(actor, project)
 
@@ -43,6 +46,11 @@ def can_edit_design(actor: Actor, project: dict) -> bool:
     if project.get("status") == "PUBLISHED":
         return False
     return project.get("architect_id") == actor.id
+
+
+def can_view_drafts(actor: Actor, project: dict) -> bool:
+    """Read access to unsubmitted design state. Admin may inspect but never write."""
+    return can_edit_design(actor, project) or is_admin(actor)
 
 
 def can_generate(actor: Actor, project: dict) -> bool:
@@ -80,6 +88,14 @@ def can_mutate_comment(actor: Actor, project: dict, author_id: str) -> bool:
     return actor.role == ARCHITECT and actor.approved and project.get("architect_id") == actor.id
 
 
+def can_resolve_comment(actor: Actor, project: dict) -> bool:
+    return actor.role == ARCHITECT and actor.approved and project.get("architect_id") == actor.id
+
+
+def can_restore_version(actor: Actor, project: dict) -> bool:
+    return can_edit_design(actor, project) and project.get("status") in ("IN_PROGRESS", "FOR_CHECKING", "FOR_REVISION")
+
+
 def can_select_candidate(actor: Actor, project: dict) -> bool:
     return actor.role == CLIENT and project.get("client_id") == actor.id and project.get("status") != "PUBLISHED"
 
@@ -104,11 +120,31 @@ def can_publish(actor: Actor, project: dict) -> bool:
 
 
 def can_manage_accounts(actor: Actor) -> bool:
-    return actor.role in (MAIN_ADMIN, IT_PERSONNEL)
+    return is_admin(actor)
+
+
+def can_suspend_accounts(actor: Actor) -> bool:
+    return is_admin(actor)
+
+
+def can_delete_accounts(actor: Actor) -> bool:
+    return is_admin(actor)
+
+
+def can_assign_projects(actor: Actor) -> bool:
+    return is_admin(actor)
+
+
+def can_review_architect_applications(actor: Actor) -> bool:
+    return is_admin(actor)
+
+
+def can_use_studio(actor: Actor) -> bool:
+    return is_admin(actor)
 
 
 def can_view_audit(actor: Actor) -> bool:
-    return actor.role in (MAIN_ADMIN, IT_PERSONNEL, ARCHITECT, CLIENT)
+    return actor.role in ROLES
 
 
 def can_update_brief(actor: Actor, project: dict) -> bool:
@@ -121,12 +157,8 @@ def can_update_brief(actor: Actor, project: dict) -> bool:
     return False
 
 
-def can_accept_candidate(actor: Actor, project: dict) -> bool:
-    return can_edit_design(actor, project)
-
-
 def can_create_project(actor: Actor) -> bool:
-    return actor.role == MAIN_ADMIN
+    return is_admin(actor)
 
 
 def can_submit_review(actor: Actor, project: dict) -> bool:
@@ -140,12 +172,13 @@ def can_submit_review(actor: Actor, project: dict) -> bool:
 
 
 def can_view_inquiries(actor: Actor) -> bool:
-    return actor.role in (MAIN_ADMIN, IT_PERSONNEL)
+    return is_admin(actor)
 
 
 # Names mirrored by frontend/src/workflow/permissions.ts
 canViewProject = can_view_project
 canEditDesign = can_edit_design
+canViewDrafts = can_view_drafts
 canGenerate = can_generate
 canComment = can_comment
 canSelectCandidate = can_select_candidate

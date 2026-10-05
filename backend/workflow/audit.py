@@ -42,6 +42,6 @@ def notify_project_roles(db: Session, project: Project, kind: str, message: str,
             notify(db, uid, kind, message, project.id)
 
 
-def notify_it(db: Session, kind: str, message: str, project_id: str | None = None) -> None:
-    for user in db.query(User).filter(User.role == "IT_PERSONNEL").all():
+def notify_admins(db: Session, kind: str, message: str, project_id: str | None = None) -> None:
+    for user in db.query(User).filter(User.role == "ADMIN").all():
         notify(db, user.id, kind, message, project_id)

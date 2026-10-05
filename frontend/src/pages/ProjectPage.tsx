@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import ConstraintForm from '../components/ConstraintForm'
 import FloorPlanEditor from '../components/FloorPlanEditor'
 import FloorPlanGallery from '../components/FloorPlanGallery'
@@ -9,19 +9,18 @@ import { validateQuestionnaire } from '../converters/validate-questionnaire'
 import { FloorPlan } from '../types/floorplan'
 import { initialQuestionnaire, QuestionnaireData } from '../types/questionnaire'
 import type { SceneDocument } from '../scene-graph/types'
-import { loadLiveScene } from '../scene-graph/edit/load-scene'
+import { isSceneDocument, loadLiveScene } from '../scene-graph/edit/load-scene'
+import type { SiteLot } from '../scene-graph/site/site-context'
 import { sceneDocumentToFloorPlan } from '../scene-graph/adapters/scene-document-to-floorplan'
 import { useAuth } from '../workflow/auth'
 import { useUnits } from '../units/UnitsProvider'
 import { roleHome } from '../workflow/paths'
 import {
-  acceptCandidate,
   addComment,
   architectApprove,
   Candidate,
   clientApprove,
   Comment,
-  deleteComment,
   generateProject,
   getBrief,
   getProject,
@@ -33,18 +32,32 @@ import {
   patchComment,
   Project,
   publishProject,
+  replyToComment,
+  resolveComment,
+  restoreRevision,
   resumeProject,
   Revision,
   saveBrief,
-  saveDesign,
   saveWorkingDesign,
   selectCandidate,
   submitReview,
 } from '../workflow/api'
-import { canEditDesign, canOpenArchitectCanvas, canSubmitReview } from '../workflow/permissions'
+import {
+  canEditDesign,
+  canOpenArchitectCanvas,
+  canResolveComment,
+  canRestoreVersion,
+  canSubmitReview,
+} from '../workflow/permissions'
 import { clientVisibleScene } from '../workflow/reviewScene'
+import { buildPublishedExport } from '../workflow/publishedExport'
+import { statusLabel } from '../workflow/statusLabels'
 import { displayNameFromEmail } from '../workflow/displayName'
-import { clientCommentCountLabel, commentRoleLabel } from '../components/planAnnotations'
+import { buildThreads, formatStamp } from '../workflow/commentThreads'
+import { versionSourceLabel } from '../workflow/versionLabels'
+import { clientCommentCountLabel } from '../components/planAnnotations'
+import type { CommentActions } from '../components/CommentThread'
+import SidebarComments from '../components/SidebarComments'
 import ConfirmDialog from '../components/ConfirmDialog'
 import WorkflowShell from './WorkflowShell'
 
@@ -63,12 +76,25 @@ function generationError(err: unknown): string {
   return 'Generation failed'
 }
 
+/** The lot only counts when the saved brief has one; questionnaire defaults are not a lot. */
+function lotFromBrief(questionnaire: Partial<QuestionnaireData> | null | undefined): SiteLot | null {
+  const site = questionnaire?.site
+  const width = Number(site?.lotWidth)
+  const depth = Number(site?.lotDepth)
+  if (!(width > 0) || !(depth > 0)) return null
+  return { width, depth, shape: site?.lotShape }
+}
+
 export default function ProjectPage() {
   const { projectId } = useParams()
+  const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const versionParam = searchParams.get('version')
   const { user } = useAuth()
   const { unit } = useUnits()
   const [project, setProject] = useState<Project | null>(null)
   const [questionnaire, setQuestionnaire] = useState<QuestionnaireData>(initialQuestionnaire)
+  const [briefLot, setBriefLot] = useState<SiteLot | null>(null)
   const [candidates, setCandidates] = useState<Candidate[]>([])
   const [comments, setComments] = useState<Comment[]>([])
   const [revisions, setRevisions] = useState<Revision[]>([])
@@ -81,28 +107,31 @@ export default function ProjectPage() {
   const [workingSaved, setWorkingSaved] = useState(false)
   const [formalVersion, setFormalVersion] = useState<number | null>(null)
   const workingCopyRef = useRef<unknown>(null)
+  const [adminDraft, setAdminDraft] = useState<SceneDocument | null>(null)
   const [invitation, setInvitation] = useState<Invitation | null>(null)
   const [canvasOpen, setCanvasOpen] = useState(false)
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [commentBody, setCommentBody] = useState('')
   const [stage, setStage] = useState('CLIENT_BRIEF')
   const [dirty, setDirty] = useState(false)
   const [unvalidatedPreview, setUnvalidatedPreview] = useState(false)
-  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
+  const [viewingRevision, setViewingRevision] = useState<Revision | null>(null)
+  const [pendingRestore, setPendingRestore] = useState<Revision | null>(null)
+  const [restoring, setRestoring] = useState(false)
   const [confirmReview, setConfirmReview] = useState(false)
   const [reviewSent, setReviewSent] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [submitNotice, setSubmitNotice] = useState<string | null>(null)
   const errorRef = useRef<HTMLDivElement>(null)
   const autosaveTimer = useRef<number | null>(null)
-  const acceptingRef = useRef(false)
   const sceneSourceRef = useRef<string | null>(null)
 
   const actor = user ? { id: user.id, role: user.role, approved: user.approved } : null
   const editable = !!(actor && project && canEditDesign(actor, project))
   const isClient = user?.role === 'CLIENT'
   const isArchitect = user?.role === 'ARCHITECT'
-  const isStaff = user?.role === 'MAIN_ADMIN' || user?.role === 'IT_PERSONNEL'
+  const isAdmin = user?.role === 'ADMIN'
   const home = isArchitect ? '/architect/projects' : roleHome(user?.role)
   const floorPlanReady = project?.has_floor_plan === true
   const generating = project?.generation_status === 'running'
@@ -118,6 +147,23 @@ export default function ProjectPage() {
     const visible = clientVisibleScene(detail)
     setSubmittedScene(visible.scene)
     setSubmittedRevisionId(visible.revisionId)
+    if (detail.project.status === 'PUBLISHED' && !buildPublishedExport({
+      status: detail.project.status,
+      projectId: detail.project.id,
+      projectName: detail.project.name,
+      clientEmail: detail.project.client_email,
+      scene: visible.scene,
+      revisionId: visible.revisionId,
+      version: detail.current_revision?.version ?? null,
+      publishedAt: detail.current_revision?.created_at ?? null,
+      lot: null,
+      questionnaire: initialQuestionnaire,
+    })) {
+      console.error('Published floor plan is unavailable.', {
+        projectId,
+        revisionId: detail.document.current_revision_id,
+      })
+    }
     if (visible.floorPlan) {
       setCurrentPlan(visible.floorPlan)
     } else if (detail.current_revision?.floor_plan) {
@@ -131,6 +177,8 @@ export default function ProjectPage() {
     } else {
       workingCopyRef.current = null
     }
+    const draft = isAdmin ? detail.document.working_scene_document : null
+    setAdminDraft(isSceneDocument(draft) ? draft : null)
     const brief = await getBrief(projectId)
     if (brief.questionnaire && Object.keys(brief.questionnaire).length) {
       setQuestionnaire({
@@ -138,6 +186,7 @@ export default function ProjectPage() {
         house: { ...initialQuestionnaire.house, ...brief.questionnaire.house },
       })
     }
+    setBriefLot(lotFromBrief(brief.questionnaire))
     setCandidates(await listCandidates(projectId))
     setComments(await listComments(projectId))
     setRevisions(await listRevisions(projectId))
@@ -147,6 +196,7 @@ export default function ProjectPage() {
   useEffect(() => {
     setCanvasOpen(false)
     setSelectedAnnotationId(null)
+    setViewingRevision(null)
     setScene(null)
     setSubmittedScene(null)
     setSubmittedRevisionId(null)
@@ -208,20 +258,11 @@ export default function ProjectPage() {
     }
   }
 
-  async function onAccept(candidateId: string) {
-    if (!projectId) return
-    const rev = await acceptCandidate(projectId, candidateId)
-    setCurrentPlan(rev.floor_plan || null)
-    setCurrentRevisionId(rev.id)
-    setFormalVersion(rev.version)
-    setDirty(false)
-    await refresh()
-  }
-
   function scheduleAutosave(next: SceneDocument) {
     setScene(next)
     setDirty(true)
     setWorkingSaved(false)
+    setSubmitNotice(null)
     if (!projectId || !editable) return
     if (autosaveTimer.current) window.clearTimeout(autosaveTimer.current)
     autosaveTimer.current = window.setTimeout(() => {
@@ -234,24 +275,8 @@ export default function ProjectPage() {
     }, 800)
   }
 
-  async function onSaveRevision() {
-    if (!currentRevisionId || !scene) return
-    const floorPlan = sceneDocumentToFloorPlan(scene)
-    const rev = await saveDesign(currentRevisionId, floorPlan, currentRevisionId, scene)
-    setCurrentPlan(rev.floor_plan || floorPlan)
-    setCurrentRevisionId(rev.id)
-    setFormalVersion(rev.version)
-    setDirty(false)
-    setWorkingSaved(false)
-    await refresh()
-  }
-
-  async function onSaveDesign() {
-    await onSaveRevision()
-  }
-
   async function onArchitectSubmitReview() {
-    if (!projectId) return
+    if (!projectId || submitting) return
     if (autosaveTimer.current) {
       window.clearTimeout(autosaveTimer.current)
       autosaveTimer.current = null
@@ -260,47 +285,134 @@ export default function ProjectPage() {
       setError('A current SceneDocument is required to submit for review.')
       return
     }
-    await saveWorkingDesign(projectId, scene)
-    await submitReview(projectId, {
-      scene_document: scene,
-      floor_plan: sceneDocumentToFloorPlan(scene),
-    })
-    await refresh()
+    setSubmitting(true)
+    setSubmitNotice(null)
+    try {
+      await saveWorkingDesign(projectId, scene)
+      setDirty(false)
+      setWorkingSaved(true)
+      const result = await submitReview(projectId, {
+        scene_document: scene,
+        floor_plan: sceneDocumentToFloorPlan(scene),
+      })
+      await refresh()
+      const v = result.version != null ? `v${result.version}` : 'the last version'
+      setSubmitNotice(result.created ? `Sent ${v} for review.` : `No changes since ${v}; nothing new sent.`)
+    } finally {
+      setSubmitting(false)
+    }
   }
 
-  async function onAddComment() {
-    if (!projectId || !commentBody.trim()) return
-    await addComment(projectId, commentBody.trim())
-    setCommentBody('')
-    await refresh()
+  /** Runs a comment mutation, then reloads only the comment list. */
+  function commentOp(op: () => Promise<unknown>, failure: string) {
+    if (!projectId) return
+    op()
+      .then(async () => setComments(await listComments(projectId)))
+      .catch((err: unknown) => {
+        const ax = err as { response?: { data?: { detail?: unknown } } }
+        const detail = ax.response?.data?.detail
+        setError(typeof detail === 'string' ? detail : failure)
+      })
   }
 
-  const annotationHandlers = !isStaff && projectId ? {
-    comments,
+  const commentActions: CommentActions | undefined = !isAdmin && projectId ? {
     currentUserId: user?.id,
+    canResolve: !!(actor && project && canResolveComment(actor, project)),
+    canComment: true,
+    onReply: (parentId, body) => commentOp(() => replyToComment(projectId, parentId, body), 'Could not post reply.'),
+    onEdit: (id, body) => commentOp(() => patchComment(projectId, id, { body }), 'Could not edit comment.'),
+    onResolve: (id, resolved, note) => commentOp(() => resolveComment(projectId, id, resolved, note), 'Could not update comment.'),
+    onAddGeneral: body => commentOp(() => addComment(projectId, body), 'Could not post comment.'),
+  } : undefined
+
+  const annotationHandlers = commentActions && projectId ? {
+    comments,
+    commentActions,
     allowAnnotations: true,
     selectedAnnotationId,
     onSelectAnnotation: setSelectedAnnotationId,
-    onAddAnnotation: async (payload: { body: string; x: number; y: number; object_id: string | null }) => {
-      await addComment(projectId, payload)
-      await refresh()
-    },
-    onUpdateAnnotation: async (id: string, body: string) => {
-      await patchComment(projectId, id, { body })
-      await refresh()
-    },
-    onDeleteAnnotation: (id: string) => {
-      setPendingDeleteId(id)
-    },
-    onMoveAnnotation: async (id: string, x: number, y: number) => {
-      await patchComment(projectId, id, { x, y })
-      await refresh()
+    onAddAnnotation: (payload: { body: string; x: number; y: number; object_id: string | null }) => {
+      commentOp(() => addComment(projectId, payload), 'Could not post comment.')
     },
   } : {}
 
+  useEffect(() => {
+    if (!versionParam) return
+    openVersion({ id: versionParam } as Revision)
+    setSearchParams(p => { p.delete('version'); return p }, { replace: true })
+  }, [versionParam])
+
+  async function openVersion(rev: Pick<Revision, 'id'>) {
+    try {
+      const full = await getRevision(rev.id)
+      setViewingRevision(full)
+      setSelectedAnnotationId(null)
+    } catch {
+      setError('Could not open this version.')
+    }
+  }
+
+  async function onRestoreVersion(rev: Revision) {
+    if (restoring) return
+    if (autosaveTimer.current) {
+      window.clearTimeout(autosaveTimer.current)
+      autosaveTimer.current = null
+    }
+    setRestoring(true)
+    try {
+      const restored = await restoreRevision(rev.id)
+      setViewingRevision(null)
+      setSelectedGallery(null)
+      setDirty(false)
+      workingCopyRef.current = restored.scene_document ?? null
+      sceneSourceRef.current = null
+      await refresh()
+      setSubmitNotice(`Version ${rev.version} restored as Version ${restored.version}. Send to review when ready.`)
+    } catch (err: unknown) {
+      const ax = err as { response?: { data?: { detail?: unknown } } }
+      const detail = ax.response?.data?.detail
+      setError(typeof detail === 'string' ? detail : 'Could not restore this version.')
+    } finally {
+      setRestoring(false)
+    }
+  }
+
+  const canRestore = !!(actor && project && canRestoreVersion(actor, project))
+  const latestVersion = revisions.reduce((m, r) => Math.max(m, r.version), 0)
+
   const viewPlan = selectedGallery || currentPlan
-  const readOnly = !editable || isStaff
+  const readOnly = !editable || isAdmin
+  const adminPlan = useMemo(
+    () => (isAdmin ? (adminDraft ? sceneDocumentToFloorPlan(adminDraft) : viewPlan) : null),
+    [isAdmin, adminDraft, viewPlan],
+  )
   const canSendReview = !!(actor && project && canSubmitReview(actor, project))
+  const publishedExport = useMemo(() => buildPublishedExport({
+    status: project?.status,
+    projectId: project?.id || projectId || '',
+    projectName: project?.name || 'Project',
+    clientEmail: project?.client_email,
+    invitationEmail: invitation?.email,
+    scene: submittedScene,
+    revisionId: submittedRevisionId,
+    version: formalVersion,
+    publishedAt: revisions.find(r => r.id === submittedRevisionId)?.created_at ?? null,
+    lot: briefLot,
+    questionnaire,
+  }), [
+    project?.status,
+    project?.id,
+    project?.name,
+    project?.client_email,
+    projectId,
+    invitation?.email,
+    submittedScene,
+    submittedRevisionId,
+    formalVersion,
+    revisions,
+    briefLot,
+    questionnaire,
+  ])
 
   useEffect(() => {
     const plan = currentPlan || selectedGallery
@@ -317,11 +429,10 @@ export default function ProjectPage() {
   }, [currentPlan, selectedGallery, currentRevisionId, submittedRevisionId, submittedScene, isArchitect, projectId, scene])
 
   useEffect(() => {
-    if (!isArchitect || !canvasOpen || currentPlan || !candidates.length || acceptingRef.current) return
+    if (!isArchitect || !canvasOpen || currentPlan || selectedGallery || !candidates.length) return
     const pick = candidates.find(c => c.selected_by_client) || candidates[0]
-    acceptingRef.current = true
-    onAccept(pick.id).finally(() => { acceptingRef.current = false })
-  }, [isArchitect, canvasOpen, currentPlan, candidates])
+    setSelectedGallery(galleryPlanFromCandidate(pick))
+  }, [isArchitect, canvasOpen, currentPlan, selectedGallery, candidates])
 
   useEffect(() => () => {
     if (autosaveTimer.current) window.clearTimeout(autosaveTimer.current)
@@ -341,7 +452,7 @@ export default function ProjectPage() {
   }
 
   return (
-    <WorkflowShell status={project?.status} flush>
+    <WorkflowShell status={statusLabel(project?.status) || undefined} flush>
       {error && (
         <div className="error-msg" role="alert" tabIndex={-1} ref={errorRef}>{error}</div>
       )}
@@ -364,8 +475,8 @@ export default function ProjectPage() {
                   <span>{generating ? 'Generating' : floorPlanReady ? 'Generated' : 'Not generated'}</span>
                 </li>
                 <li>
-                  <span>Architect review</span>
-                  <span>{floorPlanReady ? project.status.replace(/_/g, ' ') : 'Waiting for client'}</span>
+                  <span>Status</span>
+                  <span>{floorPlanReady ? statusLabel(project.status) : 'Waiting for client'}</span>
                 </li>
               </ul>
               <button
@@ -385,7 +496,7 @@ export default function ProjectPage() {
               )}
             </section>
           )}
-          {!isStaff && !isArchitect && (
+          {!isAdmin && !isArchitect && (
             <ConstraintForm
               value={questionnaire}
               onChange={setQuestionnaire}
@@ -396,17 +507,20 @@ export default function ProjectPage() {
               generateLabel="Generate AI candidates"
             />
           )}
-          {isStaff && <p className="wf-hint">Staff can inspect status and comments, not the canvas.</p>}
+          {isAdmin && <p className="wf-hint">Admin view: inspect status, comments, versions, and the canvas. Editing is disabled.</p>}
 
           <div className="wf-actions">
-            {isArchitect && candidates[0] && (
-              <button type="button" className="back-btn" onClick={() => onAccept(candidates.find(c => c.selected_by_client)?.id || candidates[0].id)}>
-                Accept candidate
+            {isArchitect && canSendReview && (
+              <button
+                type="button"
+                className="back-btn"
+                disabled={submitting || !scene}
+                onClick={() => { onArchitectSubmitReview().catch(e => setError(String(e))) }}
+              >
+                {submitting ? 'Sending…' : 'Send to review'}
               </button>
             )}
-            {isArchitect && canSendReview && (
-              <button type="button" className="back-btn" onClick={() => { onArchitectSubmitReview().catch(e => setError(String(e))) }}>Submit for checking</button>
-            )}
+            {isArchitect && submitNotice && <p className="wf-hint" role="status">{submitNotice}</p>}
             {isClient && canSendReview && !reviewSent && (
               <button type="button" className="catalog-generate-btn" onClick={() => setConfirmReview(true)}>Send to Review</button>
             )}
@@ -425,65 +539,38 @@ export default function ProjectPage() {
             {isArchitect && project?.status === 'APPROVED' && (
               <button type="button" className="catalog-generate-btn" onClick={async () => { await publishProject(projectId!); await refresh() }}>Publish</button>
             )}
-            <Link className="back-btn" to={home}>Back to projects</Link>
+            {!(isArchitect && canvasOpen && scene) && <Link className="back-btn" to={home}>Back to projects</Link>}
           </div>
 
-          {isArchitect && canvasOpen && architectCanOpen && (
-            <div>
-              <h3>Revisions</h3>
+          {projectId && (
+            <Link className="wf-link project-activity-link" to={`/projects/${projectId}/activity`}>Project Activity</Link>
+          )}
+
+          {revisions.length > 0 && (
+            <section className="wf-versions" aria-label="Version history">
+              <h3>Versions</h3>
               <ul className="wf-list">
-                {revisions.map(r => (
+                {[...revisions].sort((a, b) => b.version - a.version).map(r => (
                   <li key={r.id}>
-                    <button type="button" className="wf-link" onClick={async () => {
-                      const full = await getRevision(r.id)
-                      if (full.floor_plan) {
-                        setCurrentPlan(full.floor_plan)
-                        setCurrentRevisionId(full.id)
-                        setFormalVersion(full.version)
-                        setSelectedGallery(null)
-                        setDirty(false)
-                        workingCopyRef.current = full.scene_document ?? null
-                        sceneSourceRef.current = null
-                      }
-                    }}>
-                      v{r.version} {r.source_type}{r.is_current ? ' (current)' : ''}
+                    <button
+                      type="button"
+                      className={`wf-link wf-version ${viewingRevision?.id === r.id ? 'active' : ''}`}
+                      aria-current={viewingRevision?.id === r.id ? 'true' : undefined}
+                      onClick={() => { openVersion(r) }}
+                    >
+                      <span>Version {r.version}{r.is_current ? ' (current)' : ''}</span>
+                      <span className="wf-hint">{versionSourceLabel(r, revisions)}{r.created_at ? ` · ${formatStamp(r.created_at)}` : ''}</span>
                     </button>
                   </li>
                 ))}
               </ul>
-            </div>
+            </section>
           )}
 
-          <div>
-            <h3>Comments</h3>
-            <ul className="wf-list">
-              {comments.map(c => (
-                <li key={c.id}>
-                  <button
-                    type="button"
-                    className={`wf-link ${selectedAnnotationId === c.id ? 'active' : ''}`}
-                    onClick={() => {
-                      setSelectedAnnotationId(c.id)
-                      if (isArchitect && architectCanOpen) openArchitectCanvas()
-                    }}
-                  >
-                    <span className="studio-meta">{commentRoleLabel(c.author_role)}</span>
-                    {' '}
-                    {displayNameFromEmail(c.author_email || 'client')}: {c.body}
-                    {c.x != null && c.y != null ? <span className="wf-hint"> · pin</span> : null}
-                  </button>
-                </li>
-              ))}
-            </ul>
-            {!isStaff && (
-              <div className="wf-inline wf-comment-composer">
-                <label htmlFor="project-comment" className="sr-only">Comment</label>
-                <input id="project-comment" value={commentBody} onChange={e => setCommentBody(e.target.value)} placeholder="Comment" />
-                <button type="button" className="back-btn" onClick={onAddComment}>Post</button>
-              </div>
-            )}
-            {!isStaff && <p className="wf-hint">Use Note on the 2D plan to pin a sticky comment.</p>}
-          </div>
+          {isAdmin && (
+            <SidebarComments threads={buildThreads(comments)} selectedId={selectedAnnotationId} onSelect={setSelectedAnnotationId} />
+          )}
+          {!isAdmin && <p className="wf-hint">Use Note on the 2D plan to pin a sticky comment. All comments are in the right sidebar.</p>}
         </aside>
         <main className="wf-main" aria-busy={loading}>
           {unvalidatedPreview && galleryPlans.length > 0 && (
@@ -491,8 +578,57 @@ export default function ProjectPage() {
               UNVALIDATED DEVELOPMENT PREVIEW — not a validated KIYUB floor plan.
             </div>
           )}
-          {isStaff ? (
-            <div className="wf-empty">No canvas for admin or IT roles.</div>
+          {viewingRevision?.floor_plan ? (
+            <FloorPlanEditor
+              key={viewingRevision.id}
+              plan={viewingRevision.floor_plan}
+              lot={briefLot}
+              onUpdate={() => undefined}
+              readOnly
+              projectId={projectId}
+              revisionId={viewingRevision.id}
+              role={user?.role}
+              publishedExport={publishedExport}
+              existingScene={(viewingRevision.scene_document as unknown as SceneDocument | undefined) ?? null}
+              readOnlyBanner={
+                <span className="version-banner">
+                  <span>Viewing Version {viewingRevision.version} (read-only)</span>
+                  {viewingRevision.version !== latestVersion && <span className="wf-hint"> · Latest is Version {latestVersion}</span>}
+                  <button type="button" className="back-btn" onClick={() => setViewingRevision(null)}>Back to current</button>
+                  {isArchitect && canRestore && (
+                    <button type="button" className="catalog-generate-btn" disabled={restoring} onClick={() => setPendingRestore(viewingRevision)}>
+                      {restoring ? 'Restoring…' : 'Restore as new version'}
+                    </button>
+                  )}
+                </span>
+              }
+            />
+          ) : isAdmin ? (
+            adminPlan ? (
+              <FloorPlanEditor
+                key={`admin:${currentRevisionId || adminPlan.id || 'plan'}:${adminDraft ? 'draft' : 'current'}`}
+                plan={adminPlan}
+                lot={briefLot}
+                onUpdate={() => undefined}
+                readOnly
+                projectId={projectId}
+                revisionId={submittedRevisionId || currentRevisionId || undefined}
+                role={user?.role}
+              publishedExport={publishedExport}
+                existingScene={adminDraft ?? submittedScene}
+                readOnlyBanner={
+                  <span className="version-banner">
+                    <span>
+                      {adminDraft ? "Viewing the architect's working draft" : 'Viewing the current design'} (view only, Admin)
+                    </span>
+                  </span>
+                }
+              />
+            ) : galleryPlans.length > 0 ? (
+              <FloorPlanGallery plans={galleryPlans} loading={false} onSelect={onSelectCandidate} selectedId={selectedGallery?.id} />
+            ) : (
+              <div className="wf-empty">No floor plan has been generated for this project yet.</div>
+            )
           ) : isArchitect && (!architectCanOpen || !canvasOpen) ? (
             <div className="studio-waiting">
               {generating ? (
@@ -527,13 +663,15 @@ export default function ProjectPage() {
           ) : isArchitect && canvasOpen && scene ? (
             <ArchitectCanvas
               scene={scene}
+              lot={briefLot}
               onSceneChange={setScene}
               onCommit={scheduleAutosave}
-              onSaveRevision={() => { onSaveRevision().catch(e => setError(String(e))) }}
+              onBack={() => navigate(home)}
               workingSaved={workingSaved}
               dirty={dirty}
               formalLabel={formalVersion != null ? `Formal v${formalVersion}` : undefined}
               editingEnabled={editable}
+              publishedExport={publishedExport}
               {...annotationHandlers}
             />
           ) : isArchitect && canvasOpen ? (
@@ -541,23 +679,26 @@ export default function ProjectPage() {
           ) : selectedGallery && !currentPlan ? (
             <FloorPlanEditor
               plan={selectedGallery}
+              lot={briefLot}
               onUpdate={() => undefined}
               readOnly
               projectId={projectId}
               revisionId={candidates.find(c => c.id === selectedGallery.id)?.revision_id}
               role={user?.role}
+              publishedExport={publishedExport}
               {...annotationHandlers}
             />
-          ) : viewPlan && (currentPlan || selectedGallery) && !isStaff ? (
+          ) : viewPlan && (currentPlan || selectedGallery) ? (
             <FloorPlanEditor
               plan={currentPlan && editable ? currentPlan : viewPlan}
+              lot={briefLot}
               onUpdate={plan => { if (editable) { setCurrentPlan(plan); setDirty(true) } }}
               readOnly={readOnly || !currentPlan || !editable}
               projectId={projectId}
               revisionId={submittedRevisionId || currentRevisionId || undefined}
               role={user?.role}
+              publishedExport={publishedExport}
               dirty={dirty}
-              onSave={onSaveDesign}
               existingScene={submittedScene}
               {...annotationHandlers}
             />
@@ -566,33 +707,20 @@ export default function ProjectPage() {
               plans={galleryPlans}
               loading={loading}
               onSelect={onSelectCandidate}
-              selectedId={selectedGallery?.id}
             />
           )}
         </main>
       </div>
-      {pendingDeleteId && (
+      {pendingRestore && (
         <ConfirmDialog
-          title="Delete comment"
-          body="Remove this pinned comment from the drawing?"
-          confirmLabel="Delete"
-          danger
-          onCancel={() => setPendingDeleteId(null)}
-          onConfirm={async () => {
-            if (!projectId || !pendingDeleteId) return
-            const id = pendingDeleteId
-            setPendingDeleteId(null)
-            try {
-              await deleteComment(projectId, id)
-              setSelectedAnnotationId(cur => cur === id ? null : cur)
-              await refresh()
-            } catch (err: unknown) {
-              const ax = err as { response?: { status?: number; data?: { detail?: string } } }
-              const detail = ax.response?.data?.detail
-              if (ax.response?.status === 403) setError(detail || 'You cannot delete this comment.')
-              else if (ax.response?.status === 404) setError(detail || 'Comment not found.')
-              else setError(detail || 'Could not delete comment.')
-            }
+          title={`Restore Version ${pendingRestore.version}`}
+          body={`This creates Version ${latestVersion + 1} from Version ${pendingRestore.version} and loads it into your working draft. Version ${pendingRestore.version} is kept unchanged. Nothing is sent to the client until you choose Send to review.`}
+          confirmLabel="Restore as new version"
+          onCancel={() => setPendingRestore(null)}
+          onConfirm={() => {
+            const rev = pendingRestore
+            setPendingRestore(null)
+            onRestoreVersion(rev)
           }}
         />
       )}

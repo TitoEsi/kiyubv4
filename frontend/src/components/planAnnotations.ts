@@ -1,16 +1,12 @@
 import { FloorPlan, roomCentroid } from '../types/floorplan'
+import type { Comment } from '../workflow/api'
 
-export interface PlanAnnotation {
-  id: string
-  body: string
-  author_id: string
-  author_email?: string | null
-  author_role?: string | null
-  created_at: string | null
-  object_id?: string | null
-  /** Plan meters (legacy plan-feet pins are normalized in workflow/api.ts). */
-  x?: number | null
-  y?: number | null
+/** A comment pinned in plan meters (legacy plan-feet pins are normalized in workflow/api.ts). */
+export type PlanAnnotation = Comment & { replies?: Comment[] }
+
+/** Sticky-note markers show only for unresolved top-level comments with a pin. */
+export function isStickyVisible(a: PlanAnnotation): boolean {
+  return !a.parent_id && !a.resolved && a.x != null && a.y != null
 }
 
 export function annotationPoint(a: PlanAnnotation, plan: FloorPlan): { x: number; y: number } | null {

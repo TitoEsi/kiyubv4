@@ -4,6 +4,7 @@ import KiyubLogo from './components/KiyubLogo'
 import { AuthProvider, useAuth } from './workflow/auth'
 import { UnitsProvider } from './units/UnitsProvider'
 import { roleHome } from './workflow/paths'
+import type { Role } from './workflow/permissions'
 import LoginPage from './pages/LoginPage'
 import LandingPage from './pages/LandingPage'
 import LegalPage from './pages/LegalPage'
@@ -19,9 +20,9 @@ import AdminProjectsPage from './pages/AdminProjectsPage'
 import ArchitectInvitationsPage from './pages/ArchitectInvitationsPage'
 import ArchitectProfilePage from './pages/ArchitectProfilePage'
 import HistoryPage from './pages/HistoryPage'
-import ITAnalyticsPage from './pages/ITAnalyticsPage'
-import ITHome from './pages/ITHome'
+import AdminAnalyticsPage from './pages/AdminAnalyticsPage'
 import ProjectPage from './pages/ProjectPage'
+import ProjectActivityPage from './pages/ProjectActivityPage'
 import StaffArchitectsPage from './pages/StaffArchitectsPage'
 import StaffClientsPage from './pages/StaffClientsPage'
 import AboutPage from './pages/AboutPage'
@@ -36,7 +37,9 @@ function AuthLoading() {
   )
 }
 
-function Guard({ roles, children }: { roles: string[]; children: ReactElement }) {
+const ALL_ROLES: Role[] = ['CLIENT', 'ARCHITECT', 'ADMIN']
+
+function Guard({ roles, children }: { roles: Role[]; children: ReactElement }) {
   const { user, ready } = useAuth()
   if (!ready) return <AuthLoading />
   if (!user) return <Navigate to="/login" replace />
@@ -70,21 +73,17 @@ export default function App() {
         <Route path="/architect/clients" element={<Guard roles={['ARCHITECT']}><ArchitectClients /></Guard>} />
         <Route path="/architect/invitations" element={<Guard roles={['ARCHITECT']}><ArchitectInvitationsPage /></Guard>} />
         <Route path="/architect/history" element={<Guard roles={['ARCHITECT']}><HistoryPage /></Guard>} />
-        <Route path="/admin" element={<Guard roles={['MAIN_ADMIN']}><AdminHome /></Guard>} />
-        <Route path="/admin/projects" element={<Guard roles={['MAIN_ADMIN']}><AdminProjectsPage /></Guard>} />
-        <Route path="/admin/clients" element={<Guard roles={['MAIN_ADMIN']}><StaffClientsPage /></Guard>} />
-        <Route path="/admin/architects" element={<Guard roles={['MAIN_ADMIN']}><StaffArchitectsPage /></Guard>} />
-        <Route path="/admin/architects/:userId" element={<Guard roles={['MAIN_ADMIN']}><ArchitectProfilePage /></Guard>} />
-        <Route path="/admin/history" element={<Guard roles={['MAIN_ADMIN']}><HistoryPage /></Guard>} />
-        <Route path="/it" element={<Guard roles={['IT_PERSONNEL']}><ITHome /></Guard>} />
-        <Route path="/it/clients" element={<Guard roles={['IT_PERSONNEL']}><StaffClientsPage /></Guard>} />
-        <Route path="/it/architects" element={<Guard roles={['IT_PERSONNEL']}><StaffArchitectsPage /></Guard>} />
-        <Route path="/it/architects/:userId" element={<Guard roles={['IT_PERSONNEL']}><ArchitectProfilePage /></Guard>} />
-        <Route path="/it/analytics" element={<Guard roles={['IT_PERSONNEL']}><ITAnalyticsPage /></Guard>} />
-        <Route path="/it/history" element={<Guard roles={['IT_PERSONNEL']}><HistoryPage /></Guard>} />
-        <Route path="/projects/:projectId" element={<Guard roles={['CLIENT', 'ARCHITECT', 'MAIN_ADMIN', 'IT_PERSONNEL']}><ProjectPage /></Guard>} />
-        <Route path="/about" element={<Guard roles={['CLIENT', 'ARCHITECT', 'MAIN_ADMIN', 'IT_PERSONNEL']}><AboutPage /></Guard>} />
-        <Route path="/contact" element={<Guard roles={['CLIENT', 'ARCHITECT', 'MAIN_ADMIN', 'IT_PERSONNEL']}><ContactPage /></Guard>} />
+        <Route path="/admin" element={<Guard roles={['ADMIN']}><AdminHome /></Guard>} />
+        <Route path="/admin/projects" element={<Guard roles={['ADMIN']}><AdminProjectsPage /></Guard>} />
+        <Route path="/admin/clients" element={<Guard roles={['ADMIN']}><StaffClientsPage /></Guard>} />
+        <Route path="/admin/architects" element={<Guard roles={['ADMIN']}><StaffArchitectsPage /></Guard>} />
+        <Route path="/admin/architects/:userId" element={<Guard roles={['ADMIN']}><ArchitectProfilePage /></Guard>} />
+        <Route path="/admin/analytics" element={<Guard roles={['ADMIN']}><AdminAnalyticsPage /></Guard>} />
+        <Route path="/admin/history" element={<Guard roles={['ADMIN']}><HistoryPage /></Guard>} />
+        <Route path="/projects/:projectId" element={<Guard roles={ALL_ROLES}><ProjectPage /></Guard>} />
+        <Route path="/projects/:projectId/activity" element={<Guard roles={ALL_ROLES}><ProjectActivityPage /></Guard>} />
+        <Route path="/about" element={<Guard roles={ALL_ROLES}><AboutPage /></Guard>} />
+        <Route path="/contact" element={<Guard roles={ALL_ROLES}><ContactPage /></Guard>} />
         <Route path="/" element={<HomeRedirect />} />
       </Routes>
       </UnitsProvider>

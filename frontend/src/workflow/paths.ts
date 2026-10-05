@@ -4,10 +4,8 @@ export function roleHome(role?: string | null): string {
       return '/client'
     case 'ARCHITECT':
       return '/architect'
-    case 'MAIN_ADMIN':
+    case 'ADMIN':
       return '/admin'
-    case 'IT_PERSONNEL':
-      return '/it'
     default:
       return '/login'
   }

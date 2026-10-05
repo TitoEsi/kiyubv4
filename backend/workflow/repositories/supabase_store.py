@@ -19,6 +19,7 @@ from workflow.models import (
     Comment,
     DesignDocument,
     GenerationJob,
+    HistoricalActor,
     Inquiry,
     Invitation,
     Notification,
@@ -49,15 +50,23 @@ DT_COLS = {
     "deleted_at",
     "terms_accepted_at",
     "privacy_accepted_at",
+    "submitted_at",
+    "resolved_at",
 }
 
 SKIP_ON_WRITE: dict[type, set[str]] = {
     User: {"password_hash"},
 }
 
+# Columns that must be cleared in Postgres when set back to None (e.g. reopening a comment).
+WRITE_NULLS: dict[type, set[str]] = {
+    Comment: {"resolved_at", "resolved_by", "resolution_note", "resolution_revision_id"},
+}
+
 # Parents before children. generation_jobs before ai_candidates (FK).
 _WRITE_ORDER = (
     User,
+    HistoricalActor,
     Project,
     ClientBrief,
     SiteConstraint,
@@ -137,9 +146,11 @@ def entity_to_row(obj: Any) -> dict[str, Any]:
     for name in JSON_COLS.get(model, set()):
         if name in payload:
             payload[name] = _json_dump(payload[name])
+    nullable = WRITE_NULLS.get(model, set())
     for name, value in list(payload.items()):
         if value is None:
-            payload.pop(name)
+            if name not in nullable:
+                payload.pop(name)
             continue
         if isinstance(value, datetime):
             payload[name] = value.isoformat()

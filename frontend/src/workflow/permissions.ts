@@ -1,4 +1,4 @@
-export type Role = 'CLIENT' | 'ARCHITECT' | 'MAIN_ADMIN' | 'IT_PERSONNEL'
+export type Role = 'CLIENT' | 'ARCHITECT' | 'ADMIN'
 
 export interface Actor {
   id: string
@@ -15,7 +15,7 @@ export interface ProjectRef {
 }
 
 export function canViewProject(actor: Actor, project: ProjectRef): boolean {
-  if (actor.role === 'MAIN_ADMIN' || actor.role === 'IT_PERSONNEL') return true
+  if (actor.role === 'ADMIN') return true
   if (actor.role === 'CLIENT') return project.client_id === actor.id
   if (actor.role === 'ARCHITECT') return project.architect_id === actor.id
   return false
@@ -25,6 +25,11 @@ export function canEditDesign(actor: Actor, project: ProjectRef): boolean {
   if (actor.role !== 'ARCHITECT' || actor.approved === false) return false
   if (project.status === 'PUBLISHED') return false
   return project.architect_id === actor.id
+}
+
+/** Read-only access to unsubmitted design state; Admin can inspect but never edit. */
+export function canViewDrafts(actor: Actor, project: ProjectRef): boolean {
+  return canEditDesign(actor, project) || actor.role === 'ADMIN'
 }
 
 export function canGenerate(actor: Actor, project: ProjectRef): boolean {
@@ -83,10 +88,19 @@ export function canSubmitReview(actor: Actor, project: ProjectRef): boolean {
   return false
 }
 
+export function canResolveComment(actor: Actor, project: ProjectRef): boolean {
+  return actor.role === 'ARCHITECT' && actor.approved !== false && project.architect_id === actor.id
+}
+
+export function canRestoreVersion(actor: Actor, project: ProjectRef): boolean {
+  if (!canEditDesign(actor, project)) return false
+  return project.status === 'IN_PROGRESS' || project.status === 'FOR_CHECKING' || project.status === 'FOR_REVISION'
+}
+
 export function canManageAccounts(actor: Actor): boolean {
-  return actor.role === 'MAIN_ADMIN' || actor.role === 'IT_PERSONNEL'
+  return actor.role === 'ADMIN'
 }
 
 export function canViewAudit(actor: Actor): boolean {
-  return actor.role === 'MAIN_ADMIN' || actor.role === 'IT_PERSONNEL' || actor.role === 'ARCHITECT' || actor.role === 'CLIENT'
+  return actor.role === 'ADMIN' || actor.role === 'ARCHITECT' || actor.role === 'CLIENT'
 }

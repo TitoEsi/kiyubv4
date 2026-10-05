@@ -24,6 +24,7 @@ import type {
 } from "../types";
 import { validateSceneDocumentDetailed } from "../validation";
 import { dist, nearestOnWall, wallLength } from "../edit/geometry";
+import { normalizeDoorSwings } from "../edit/door-geometry";
 import { polygonArea, polygonBounds, roomPolygonFromFloorPlan } from "./room-polygon";
 import { normalizeFloorPlan } from "../../units/legacy";
 import { fromMeters } from "../../units/measurement";
@@ -189,23 +190,36 @@ function nearestWallId(walls: Wall[], p: Point2D): string | null {
   return best?.id || null;
 }
 
-function convertOpening(opening: PlanOpening, floorId: string, ceilingM: number, wallId: string): Opening {
+/** OR-tools plans place an opening's x,y at the low-coordinate end of its span; other sources use the centre. */
+export function isCornerAnchoredPlan(plan: FloorPlan): boolean {
+  return (plan as FloorPlan & { generator?: string }).generator === "ortools";
+}
+
+export function planOpeningCentre(opening: PlanOpening, cornerAnchored: boolean): Point2D {
+  if (!cornerAnchored) return { x: opening.x, y: opening.y };
+  const half = (opening.width || 0) / 2;
+  return opening.isVertical ? { x: opening.x, y: opening.y + half } : { x: opening.x + half, y: opening.y };
+}
+
+function convertOpening(opening: PlanOpening, floorId: string, ceilingM: number, wallId: string, centre: Point2D): Opening {
   const type = openingTypeOf(opening.kind);
+  const metadata: Record<string, unknown> = {
+    isVertical: opening.isVertical,
+    roomIds: opening.roomIds || [],
+    ceilingM,
+  };
+  if (opening.hinge === "start" || opening.hinge === "end") metadata.hinge = opening.hinge;
+  if (opening.swingSide === 1 || opening.swingSide === -1) metadata.swingSide = opening.swingSide;
   return {
     id: opening.id,
     floorId,
     wallId,
     type,
-    position: { x: opening.x, y: opening.y },
+    position: centre,
     width: opening.width,
     height: opening.height ?? (type === "window" ? DEFAULT_WINDOW_HEIGHT_M : DEFAULT_DOOR_HEIGHT_M),
     sillHeight: opening.sillHeight ?? (type === "window" ? DEFAULT_WINDOW_SILL_M : 0),
-    metadata: {
-      isVertical: opening.isVertical,
-      roomIds: opening.roomIds || [],
-      ceilingM,
-      hinge: "left",
-    },
+    metadata,
   };
 }
 
@@ -224,7 +238,6 @@ function convertDoor(door: Door, floorId: string, ceilingM: number, wallId: stri
       isVertical: door.isVertical,
       roomIds: [door.roomA, door.roomB].filter(Boolean),
       ceilingM,
-      hinge: "left",
     },
   };
 }
@@ -270,14 +283,15 @@ export function floorPlanToSceneDocument(
   const walls: Wall[] = engineWalls.map((wall) => convertWall(wall, floorId, ceilingM));
   const openings: Opening[] = [];
   const usedOpeningIds = new Set<string>();
+  const cornerAnchored = isCornerAnchoredPlan(plan);
   for (const opening of engineOpenings) {
-    const p = { x: opening.x, y: opening.y };
+    const p = planOpeningCentre(opening, cornerAnchored);
     const wallId =
       opening.wallId && walls.some((w) => w.id === opening.wallId)
         ? opening.wallId
         : nearestWallId(walls, p);
     if (!wallId) continue;
-    const converted = convertOpening(opening, floorId, ceilingM, wallId);
+    const converted = convertOpening(opening, floorId, ceilingM, wallId, p);
     openings.push(converted);
     usedOpeningIds.add(converted.id);
   }
@@ -373,5 +387,5 @@ export function floorPlanToSceneDocument(
     );
   }
 
-  return scene;
+  return normalizeDoorSwings(scene);
 }

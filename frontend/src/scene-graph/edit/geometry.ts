@@ -69,6 +69,19 @@ export function collinear(a: Wall, b: Wall, eps = 0.02): boolean {
   return Math.abs(da.x * toB.y - da.y * toB.x) <= NODE_EPS
 }
 
+/** Intersection of segments ab and cd with their parameters, or null when parallel. */
+export function segmentIntersection(
+  a: Point2D, b: Point2D, c: Point2D, d: Point2D,
+): { point: Point2D; t: number; u: number } | null {
+  const r = sub(b, a), s = sub(d, c)
+  const denom = r.x * s.y - r.y * s.x
+  if (Math.abs(denom) < 1e-12) return null
+  const ac = sub(c, a)
+  const t = (ac.x * s.y - ac.y * s.x) / denom
+  const u = (ac.x * r.y - ac.y * r.x) / denom
+  return { point: add(a, scale(r, t)), t, u }
+}
+
 export function nodeIdOf(wall: Wall, which: 'start' | 'end'): string | undefined {
   const raw = wall.metadata?.[which === 'start' ? 'startNodeId' : 'endNodeId']
   return typeof raw === 'string' ? raw : undefined

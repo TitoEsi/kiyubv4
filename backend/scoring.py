@@ -131,7 +131,7 @@ def _insights(scores, rooms):
     if scores["natural_light"] < 70: insights.append("Some rooms lack perimeter walls — shift bedrooms toward exterior edges.")
     if scores["circulation"]   < 70: insights.append("Add an entry foyer or hallway for better traffic flow.")
     if scores["privacy"]       < 70: insights.append("Bedrooms are close to public zones — consider a bedroom wing.")
-    if scores["efficiency"]    < 70: insights.append("Rooms don't fully utilize the footprint — check for gaps.")
+    if scores["efficiency"]    < 70: insights.append("Rooms don't fully utilize the building footprint — check for gaps.")
     if not insights:
         insights.append("Excellent layout! Great room placement and circulation.")
     return insights

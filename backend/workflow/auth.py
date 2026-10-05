@@ -15,6 +15,7 @@ from .db import get_db, supabase_enabled
 from .models import User
 from .permissions import Actor
 from .repositories.base import MemoryStore
+from .state import ROLES
 
 JWT_SECRET = os.environ.get("JWT_SECRET", "kiyub-dev-jwt-secret-change-me")
 JWT_ALG = "HS256"
@@ -119,7 +120,7 @@ def get_current_user(
     return user
 
 
-STUDIO_API_ROLES = {"MAIN_ADMIN", "IT_PERSONNEL"}
+STUDIO_API_ROLES = {"ADMIN"}
 
 
 def require_studio_user(user: User = Depends(get_current_user)) -> User:
@@ -133,10 +134,12 @@ def require_studio_user(user: User = Depends(get_current_user)) -> User:
 def account_block_reason(user: User) -> str | None:
     if getattr(user, "deleted_at", None):
         return "Account is no longer available"
+    if user.role not in ROLES:
+        return "This account role is no longer supported"
     if getattr(user, "suspended", False):
         return "Account is suspended"
     if user.role == "ARCHITECT" and not user.approved:
-        return "Architect account pending IT approval"
+        return "Architect account pending admin approval"
     return None
 
 

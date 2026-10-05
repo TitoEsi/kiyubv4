@@ -7,6 +7,7 @@ export default defineConfig({
   envDir: path.resolve(__dirname, '..'),
   test: {
     environment: 'node',
+    css: { include: [/App\.css/] },
   },
   server: {
     port: 5173,

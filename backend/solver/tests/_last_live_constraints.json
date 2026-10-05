@@ -1,6 +1,6 @@
 {
-  "lotShape": "square",
-  "lotWidth": 30.0,
+  "lotShape": "rectangle",
+  "lotWidth": 20.0,
   "lotDepth": 30.0,
   "bedrooms": 2,
   "bathrooms": 2,
@@ -9,10 +9,10 @@
   "style": "modern",
   "openPlan": false,
   "primarySuite": true,
-  "homeOffice": false,
+  "homeOffice": true,
   "formalDining": false,
-  "garage": "1car",
-  "laundry": "closet",
+  "garage": "2car",
+  "laundry": "room",
   "outdoor": "patio",
-  "ceilingHeight": "high"
+  "ceilingHeight": "standard"
 }

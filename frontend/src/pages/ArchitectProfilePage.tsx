@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import ConfirmDialog from '../components/ConfirmDialog'
 import WorkflowShell from './WorkflowShell'
 import { useAuth } from '../workflow/auth'
@@ -27,10 +27,8 @@ export default function ArchitectProfilePage() {
   const { userId } = useParams()
   const { user: actor } = useAuth()
   const nav = useNavigate()
-  const loc = useLocation()
-  const listPath = loc.pathname.startsWith('/it') ? '/it/architects' : '/admin/architects'
-  const isAdmin = actor?.role === 'MAIN_ADMIN'
-  const isIT = actor?.role === 'IT_PERSONNEL'
+  const listPath = '/admin/architects'
+  const isAdmin = actor?.role === 'ADMIN'
   const [profile, setProfile] = useState<WorkflowUser | null>(null)
   const [projects, setProjects] = useState<Project[]>([])
   const [audit, setAudit] = useState<AuditEvent[]>([])
@@ -109,7 +107,7 @@ export default function ArchitectProfilePage() {
                   Suspend architect
                 </button>
               )}
-              {isIT && profile.suspended && (
+              {isAdmin && profile.suspended && (
                 <button type="button" className="catalog-generate-btn" onClick={() => setConfirm('delete')}>
                   Delete profile
                 </button>

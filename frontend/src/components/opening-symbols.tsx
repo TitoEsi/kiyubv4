@@ -1,15 +1,8 @@
 import type { Furniture, Opening, Wall } from '../scene-graph/types'
-import { projectT, wallDir, wallLength, wallPointAtT } from '../scene-graph/edit/geometry'
-import { openingT } from '../scene-graph/edit/opening-ops'
+import { projectT, wallDir, wallPointAtT } from '../scene-graph/edit/geometry'
+import { doorGeometry, openingEnds } from '../scene-graph/edit/door-geometry'
 
-export function openingSpan(opening: Opening, wall: Wall): { t0: number; t1: number; a: { x: number; y: number }; b: { x: number; y: number } } {
-  const len = Math.max(wallLength(wall), 1e-6)
-  const t = openingT(opening, wall)
-  const half = (opening.width / 2) / len
-  const t0 = Math.max(0, t - half)
-  const t1 = Math.min(1, t + half)
-  return { t0, t1, a: wallPointAtT(wall, t0), b: wallPointAtT(wall, t1) }
-}
+export const openingSpan = openingEnds
 
 export function wallStrokeSegments(wall: Wall, openings: Opening[]): Array<{ a: { x: number; y: number }; b: { x: number; y: number } }> {
   const mine = openings.filter(o => o.wallId === wall.id).map(o => openingSpan(o, wall)).sort((x, y) => x.t0 - y.t0)
@@ -40,14 +33,6 @@ export function OpeningSymbol({
   const span = openingSpan(opening, wall)
   const dir = wallDir(wall)
   const perp = { x: -dir.y, y: dir.x }
-  const hingeRight = opening.metadata?.hinge === 'right'
-  const hinge = hingeRight ? span.b : span.a
-  const leaf = {
-    x: hinge.x + perp.x * opening.width,
-    y: hinge.y + perp.y * opening.width,
-  }
-  const closed = hingeRight ? span.a : span.b
-  const sweep = hingeRight ? 0 : 1
   const stroke = active ? '#c45c26' : '#17191c'
   const isWindow = opening.type === 'window'
   const sliding = opening.type === 'sliding_door'
@@ -89,54 +74,49 @@ export function OpeningSymbol({
     )
   }
 
-  const r = opening.width * S
+  if (opening.type === 'garage_door') {
+    const depth = 0.25
+    const pa = { x: span.a.x + perp.x * depth, y: span.a.y + perp.y * depth }
+    const pb = { x: span.b.x + perp.x * depth, y: span.b.y + perp.y * depth }
+    const na = { x: span.a.x - perp.x * depth, y: span.a.y - perp.y * depth }
+    const nb = { x: span.b.x - perp.x * depth, y: span.b.y - perp.y * depth }
+    return (
+      <g>
+        <line x1={sx(span.a)} y1={sy(span.a)} x2={sx(span.b)} y2={sy(span.b)} stroke={BG} strokeWidth={6} />
+        <line x1={sx(span.a)} y1={sy(span.a)} x2={sx(span.b)} y2={sy(span.b)} stroke={stroke} strokeWidth={1.6} />
+        <polygon
+          points={[pa, pb, nb, na].map(p => `${sx(p)},${sy(p)}`).join(' ')}
+          fill="none"
+          stroke="#666"
+          strokeWidth={1}
+          strokeDasharray="4 3"
+        />
+        {active && <circle cx={sx(opening.position)} cy={sy(opening.position)} r={4} fill="#faf9f5" stroke="#c45c26" strokeWidth={1.5} />}
+      </g>
+    )
+  }
+
+  const g = doorGeometry(opening, wall)
+  const r = g.radius * S
   return (
     <g>
       <line x1={sx(span.a)} y1={sy(span.a)} x2={sx(span.b)} y2={sy(span.b)} stroke={BG} strokeWidth={6} />
-      <line x1={sx(hinge)} y1={sy(hinge)} x2={sx(leaf)} y2={sy(leaf)} stroke={stroke} strokeWidth={1.6} />
+      <line className="door-leaf" x1={sx(g.hinge)} y1={sy(g.hinge)} x2={sx(g.openEnd)} y2={sy(g.openEnd)} stroke={stroke} strokeWidth={1.6} />
       <path
-        d={`M ${sx(leaf)} ${sy(leaf)} A ${r} ${r} 0 0 ${sweep} ${sx(closed)} ${sy(closed)}`}
+        className="door-swing"
+        d={`M ${sx(g.latch)} ${sy(g.latch)} A ${r} ${r} 0 0 ${g.sweep} ${sx(g.openEnd)} ${sy(g.openEnd)}`}
         fill="none"
         stroke="#666"
         strokeWidth={1}
         strokeDasharray="4 3"
       />
+      <circle className="door-hinge" cx={sx(g.hinge)} cy={sy(g.hinge)} r={1.6} fill={stroke} />
       {active && <circle cx={sx(opening.position)} cy={sy(opening.position)} r={4} fill="#faf9f5" stroke="#c45c26" strokeWidth={1.5} />}
     </g>
   )
 }
 
 const BG = '#faf9f5'
-
-export function FurnitureSymbol({
-  item, ox, oy, S, active,
-}: {
-  item: Furniture
-  ox: number
-  oy: number
-  S: number
-  active: boolean
-}) {
-  const w = item.dimensions.width * S
-  const h = item.dimensions.height * S
-  const cx = ox + (item.position.x + item.dimensions.width / 2) * S
-  const cy = oy + (item.position.y + item.dimensions.height / 2) * S
-  const rot = item.rotation || 0
-  return (
-    <g transform={`translate(${cx} ${cy}) rotate(${rot})`}>
-      <rect
-        x={-w / 2}
-        y={-h / 2}
-        width={w}
-        height={h}
-        fill={active ? '#efe6dc' : '#f7f4ef'}
-        stroke={active ? '#c45c26' : '#8a8680'}
-        strokeWidth={active ? 1.6 : 1}
-      />
-      <text textAnchor="middle" y={3} fontSize={Math.max(7, Math.min(10, w / 6))} fill="#555">{item.kind}</text>
-    </g>
-  )
-}
 
 export function openingContains(opening: Opening, wall: Wall, p: { x: number; y: number }): boolean {
   const span = openingSpan(opening, wall)

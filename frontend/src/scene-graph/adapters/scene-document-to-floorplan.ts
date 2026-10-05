@@ -1,5 +1,6 @@
 import type { Door, FloorPlan, PlanFurniture, PlanOpening, PlanWall, Room } from '../../types/floorplan'
 import type { Opening, Room as SceneRoom, SceneDocument, Wall } from '../types'
+import { doorSwing, isSwingDoor } from '../edit/door-geometry'
 import { METRIC } from '../../units/legacy'
 import { legacyFeetToMeters } from '../../units/measurement'
 
@@ -35,10 +36,14 @@ const COLORS: Record<string, string> = {
   garage: '#c4c8c4',
 }
 
-function planType(room: SceneRoom): string {
+export function planType(room: SceneRoom): string {
   const source = room.metadata?.sourceType
   if (typeof source === 'string' && source) return source
   return TYPE_TO_PLAN[room.type] || room.type
+}
+
+export function sceneRoomColor(room: SceneRoom): string {
+  return (typeof room.metadata?.color === 'string' && room.metadata.color) || COLORS[planType(room)] || '#dce0e8'
 }
 
 function wallKind(wall: Wall): PlanWall['kind'] {
@@ -61,6 +66,12 @@ function partsFromRoom(room: SceneRoom): Array<{ x: number; y: number; width: nu
     width: room.dimensions.width,
     height: room.dimensions.height,
   }]
+}
+
+function swingFields(opening: Opening): Pick<PlanOpening, 'hinge' | 'swingSide'> {
+  if (!isSwingDoor(opening.type)) return {}
+  const { hinge, swingSide } = doorSwing(opening)
+  return { hinge, swingSide }
 }
 
 function isVerticalWall(wall: Wall): boolean {
@@ -89,7 +100,7 @@ export function sceneDocumentToFloorPlan(scene: SceneDocument): FloorPlan {
       y: room.position.y,
       width: room.dimensions.width,
       height: room.dimensions.height,
-      color: (typeof room.metadata?.color === 'string' && room.metadata.color) || COLORS[type] || '#dce0e8',
+      color: sceneRoomColor(room),
       footprint: room.polygon.length
         ? {
             type,
@@ -131,6 +142,7 @@ export function sceneDocumentToFloorPlan(scene: SceneDocument): FloorPlan {
       isVertical: wall ? isVerticalWall(wall) : false,
       roomIds: (opening.metadata?.roomIds as string[] | undefined) || wall?.roomIds,
       sillHeight: opening.sillHeight,
+      ...swingFields(opening),
     }
   })
 

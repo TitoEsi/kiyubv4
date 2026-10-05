@@ -385,7 +385,7 @@ export default function RoomInteriorView({ room, ceilingHeight, onClose }: Props
           <div className="room-interior-swatch" style={{ background: room.color }} />
           <span>{room.name}</span>
           <span className="room-interior-dims">
-            {fmt.dims(room.width, room.height)} · {fmt.area(room.width * room.height)} · {fmt.length(ceilingHeight)} ceiling
+            {fmt.dims(room.width, room.height)} · {fmt.area(room.width * room.height)} · Ceiling Height {fmt.length(ceilingHeight)}
           </span>
         </div>
         <button className="room-interior-close" onClick={onClose}>✕ Close</button>
@@ -415,7 +415,7 @@ export default function RoomInteriorView({ room, ceilingHeight, onClose }: Props
         <div className="ri-stat"><span>Width</span><strong>{fmt.length(room.width)}</strong></div>
         <div className="ri-stat"><span>Depth</span><strong>{fmt.length(room.height)}</strong></div>
         <div className="ri-stat"><span>Area</span><strong>{fmt.area(room.width * room.height)}</strong></div>
-        <div className="ri-stat"><span>Ceiling</span><strong>{fmt.length(ceilingHeight)}</strong></div>
+        <div className="ri-stat"><span>Ceiling Height</span><strong>{fmt.length(ceilingHeight)}</strong></div>
         <div className="ri-stat"><span>Perimeter</span><strong>{fmt.length(2 * (room.width + room.height))}</strong></div>
       </div>
     </div>

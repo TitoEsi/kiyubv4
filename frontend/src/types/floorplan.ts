@@ -110,6 +110,10 @@ export interface PlanOpening {
   isVertical: boolean
   roomIds?: string[]
   sillHeight?: number
+  /** Swing doors: hinge jamb relative to the host wall's start/end. */
+  hinge?: "start" | "end"
+  /** Swing doors: leaf opens toward the host wall normal (-dy, dx) when 1, the other side when -1. */
+  swingSide?: 1 | -1
 }
 
 export interface PlanFurniture {
